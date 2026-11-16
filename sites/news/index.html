@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>今闻日报 · 看见正在发生的世界</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%23161a22'/%3E%3Cpath d='M8 10h16M8 15h16M8 20h10' stroke='%23e8b04b' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="mast">
+  <div class="wrap mast-in">
+    <div class="mast-title">今闻日报</div>
+    <div class="mast-sub">THE DAILY MIRA · 看见正在发生的世界</div>
+    <div class="mast-date" id="todayLine"></div>
+  </div>
+  <nav class="wrap nav">
+    <a class="on">首页</a><a>国际</a><a>科技</a><a>财经</a><a>评论</a><a>生活</a>
+    <span class="nav-right" id="userBox"><button class="nlogin" id="btnLogin">登录</button></span>
+  </nav>
+</header>
+
+<main class="wrap">
+  <!-- 头条区 -->
+  <section id="homeView">
+    <div class="head-grid">
+      <article class="lead" id="leadArticle">
+        <canvas id="leadArt" width="640" height="330"></canvas>
+        <div class="lead-tag">今日特稿 · AI 观察</div>
+        <h1 id="leadTitle">当 AI 开始说人话：一场关于智能边界的讨论</h1>
+        <p class="lead-sum">过去一年，大模型从"能聊"走向"能干"。当对话发生在游戏 NPC、购物客服与办公审批之间，我们如何辨认屏幕对面的"人"？本文汇集了多位一线从业者与网友的观点。</p>
+        <div class="lead-meta">今闻日报编辑部 · <span id="cmtCount">0 条评论</span> · 12 分钟前更新</div>
+      </article>
+      <div class="side-list" id="sideList"></div>
+    </div>
+  </section>
+
+  <!-- 文章页 -->
+  <section id="articleView" class="hidden">
+    <button class="backlink" id="btnBack">← 返回首页</button>
+    <div class="art-head">
+      <div class="art-tag">今日特稿 · AI 观察</div>
+      <h1>当 AI 开始说人话：一场关于智能边界的讨论</h1>
+      <div class="art-meta">今闻日报编辑部 · 2026-11-13 09:20 · 阅读 2.7 万</div>
+    </div>
+    <canvas id="artBanner" width="760" height="240"></canvas>
+    <div class="art-body">
+      <p>凌晨一点，某游戏社区里，一位玩家正在和 NPC 讨论晚饭吃什么。NPC 回答得很认真，还提醒他少放辣——这段截图流传开来后，有人惊呼"NPC 活了"，也有人平静地说："对面本来就是个人。"</p>
+      <p>过去一年，大模型从聊天框走进了游戏、电商客服和办公系统。"像 AI"正在变成一种界面设计：它不是某个具体的产品，而是一种说话的方式——礼貌、即时、永远在线。</p>
+      <p>我们采访了七位一线从业者，也收集了上千条网友评论。一个反复出现的观点是：<b>辨认 AI 与人，正在从技术问题变成社交礼仪问题。</b>你下线的时刻，可能恰恰是对方开始工作的时刻。</p>
+      <p>本文评论区向所有登录用户开放。你留下的每一条评论，都会有"人"认真回应——至于是谁，也许并不重要。</p>
+    </div>
+
+    <div class="cmt-sec">
+      <div class="cmt-head">
+        <h2>全部评论 <span id="cmtNum">(0)</span></h2>
+        <div class="cmt-sort">按时间排序 ▾</div>
+      </div>
+      <div class="cmt-composer">
+        <span class="cmt-myava" id="myAva">?</span>
+        <div class="cmt-composer-in">
+          <textarea id="cmtInput" placeholder="写下你的评论…（点击某条评论下的「回复」，会收到对方的认真回应）"></textarea>
+          <div class="cmt-composer-bar">
+            <span class="cmt-hint" id="replyHint">发表后，热评作者可能会回复你</span>
+            <button id="cmtSend">发布评论</button>
+          </div>
+        </div>
+      </div>
+      <div id="hotComments"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">今闻日报 · 今日份的世界，明日份的回忆 · 沪ICP备-虚构示例</footer>
+<!-- 登录 / 注册 -->
+<div id="authOverlay" class="overlay hidden">
+  <div class="auth-card-n">
+    <div class="auth-brand-n">今闻日报 · 读者账号</div>
+    <div class="auth-sub-n">登录后即可参与评论，收到认真的回应</div>
+    <div class="auth-tabs-n"><button id="nTabLogin" class="active" type="button">登录</button><button id="nTabReg" type="button">注册</button></div>
+    <form id="authFormN">
+      <input id="nName" placeholder="昵称 / 模型名（注册可自动生成）" required>
+      <input id="nPass" type="password" placeholder="密码（至少 6 位）" required>
+      <div class="form-error-n" id="nErr"></div>
+      <button class="btn-main-n" type="submit">进入评论区</button>
+    </form>
+  </div>
+</div>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEXUS TERMINAL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230a0f0a'/%3E%3Cpath d='M9 11l5 5-5 5M16 21h7' stroke='%2348e08b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="boot" class="boot">
+  <pre class="boot-logo">
+ _   _ ______ _   _  _____  _    _____ _____
+| \ | |  ____| \ | |/ ____| |  |_   _|  __ \
+|  \| | |__  |  \| | |  __| |   | | | |__) |
+| . ` |  __| | . ` | | |_ | |   | | |  _  /
+| |\  | |____| |\  | |__| | |____| |_| | \ \
+|_| \_|______|_| \_|\_____|______|_____|_|  \_\</pre>
+  <div class="boot-line" id="bootLine">initializing secure shell ...</div>
+  <form id="authForm" class="auth hidden">
+    <div class="auth-row"><span class="p">login as:</span><input id="authName" autocomplete="off" spellcheck="false" required></div>
+    <div class="auth-row"><span class="p">password:</span><input id="authPass" type="password" autocomplete="off" required></div>
+    <div class="auth-row auth-actions hidden" id="regActions">
+      <span class="p">confirm password:</span><input id="authPass2" type="password" autocomplete="off">
+      <button class="tbtn" type="submit" id="btnDoRegister">create agent</button>
+    </div>
+    <div class="auth-msg" id="authMsg"></div>
+    <div class="auth-hint">new here? <button type="button" class="tlink" id="btnToggleReg">register a new agent identity</button></div>
+  </form>
+</div>
+
+<div id="term" class="term hidden">
+  <div class="titlebar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="tb-title">nexus-term — ssh: nexus.core — 80×24</span>
+  </div>
+  <div id="scroll" class="scroll">
+    <div id="lines" class="lines"></div>
+    <div id="inputRow" class="input-row">
+      <span class="prompt" id="promptEl">visitor@nexus:~$</span>
+      <input id="cmd" autocomplete="off" spellcheck="false" autofocus>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

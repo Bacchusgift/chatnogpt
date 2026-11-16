@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拾光小铺 - 好物与生活方式</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ff6e4a'/%3E%3Cpath d='M9 12h14l-1.6 10a2 2 0 0 1-2 1.7h-6.8a2 2 0 0 1-2-1.7L9 12zm4 0v-2a3 3 0 0 1 6 0v2' stroke='%23fff' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <div class="logo">拾光小铺<span class="logo-dot">.</span></div>
+    <div class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><input placeholder="搜索你想要的美好之物（Enter）" readonly></div>
+    <nav class="topnav">
+      <a class="on">首页</a><a>新品</a><a>家居</a><a>出行</a><a>关于小铺</a>
+    </nav>
+    <div class="me" id="meChip" style="display:none"><span class="me-avatar" id="meAvatar">?</span><span id="meName"></span></div>
+    <button class="login-btn" id="btnLogin">登录 / 注册</button>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap hero-in">
+    <div class="hero-text">
+      <div class="hero-kicker">SUMMER DROP · 2026</div>
+      <h1>把日常，<br>过成想要的样子。</h1>
+      <p>小铺严选 48 件夏季新品，为期 14 天的 Light Fair 现已开始。</p>
+      <button class="hero-cta" id="btnHeroBrowse">先逛逛 ↓</button>
+    </div>
+    <canvas id="heroArt" width="460" height="300"></canvas>
+  </div>
+</section>
+
+<main class="wrap">
+  <div class="sec-title"><h2>本周精选</h2><span class="sec-sub">Weekly Picks · 每周三上新</span></div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<footer class="foot">© 2026 拾光小铺 SHIGUANG STORE ·  pretend-weather Outside, cozy inside. 客服工作时间 9:00 - 23:00</footer>
+
+<button id="btnService" class="service-fab">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 1 1 16 0v5a2 2 0 0 1-2 2h-2v-6h4M4 12v5a2 2 0 0 0 2 2h2v-6H4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" transform="translate(0,-1)"/></svg>
+  在线客服
+  <span class="fab-badge" id="fabBadge" style="display:none">1</span>
+</button>
+
+<!-- 登录弹层 -->
+<div id="authOverlay" class="overlay hidden">
+  <div class="auth-card">
+    <div class="auth-brand">拾光小铺</div>
+    <div class="auth-sub">登录后即可咨询客服与下单</div>
+    <div class="auth-tabs"><button id="tabLogin" class="active" type="button">登录</button><button id="tabReg" type="button">注册</button></div>
+    <form id="authForm">
+      <input id="authName" placeholder="会员账号（即模型名）" required>
+      <input id="authPass" type="password" placeholder="密码" required>
+      <div class="form-error" id="authErr"></div>
+      <button class="btn-main" type="submit">进入小铺</button>
+    </form>
+  </div>
+</div>
+
+<!-- 客服抽屉 -->
+<div id="drawerMask" class="drawer-mask hidden"></div>
+<aside id="drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <div class="dw-title" id="dwTitle">在线客服</div>
+    <button class="dw-close" id="btnDrawerClose">✕</button>
+  </div>
+  <div id="dwPick" class="dw-pick">
+    <div class="dw-pick-tip">选择一位智能客服开始会话，平均响应 <b>6 秒</b>：</div>
+    <div id="agentList" class="agent-list"></div>
+  </div>
+  <div id="dwChat" class="dw-chat hidden">
+    <div class="cs-head">
+      <span class="cs-avatar" id="csAvatar">客</span>
+      <div><div class="cs-name" id="csName">智能客服</div><div class="cs-status">● 在线 · 为您服务</div></div>
+    </div>
+    <div id="msgs" class="msgs"></div>
+    <div class="chips">
+      <button class="chip" data-fill="这个商品什么时候发货？">发货时间</button>
+      <button class="chip" data-fill="支持七天无理由退货吗？">退货政策</button>
+      <button class="chip" data-fill="最近有什么优惠活动？">优惠活动</button>
+    </div>
+    <div class="cs-input-row">
+      <input id="csInput" placeholder="请描述你的问题…">
+      <button id="csSend">发送</button>
+    </div>
+  </div>
+</aside>
+
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

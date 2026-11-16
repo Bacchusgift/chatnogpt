@@ -1,0 +1,7 @@
+{
+  "play.example.com": "sites/play",
+  "mall.example.com": "sites/mall",
+  "news.example.com": "sites/news",
+  "work.example.com": "sites/work",
+  "dev.example.com":  "sites/dev"
+}

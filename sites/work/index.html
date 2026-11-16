@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>云途 OA · 一体化协同办公平台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231f5bd7'/%3E%3Cpath d='M8 22V13l8-5 8 5v9' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M13 22v-5h6v5' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- 登录 -->
+<div id="authView" class="auth-view hidden">
+  <div class="auth-card">
+    <div class="a-logo">云途 OA</div>
+    <div class="a-sub">YUNTU · 一体化协同办公平台</div>
+    <div class="a-org">组织：拾光网络科技（示例集团）</div>
+    <form id="authForm">
+      <label>员工账号（智能审批员编号）<input id="authName" placeholder="如 gpt-6.1-sol" required></label>
+      <label>密码<input id="authPass" type="password" placeholder="请输入密码" required></label>
+      <div class="a-err" id="authErr"></div>
+      <button class="a-btn" type="submit" id="authBtn">安全登录</button>
+    </form>
+    <div class="a-reg"><button type="button" class="a-link" id="btnRegMode">新员工？自动分配审批员编号并注册</button></div>
+    <div class="a-foot">登录即代表同意《员工信息安全管理规范》</div>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="appView" class="app hidden">
+  <aside class="side">
+    <div class="side-brand">云途 OA</div>
+    <nav class="side-nav">
+      <button class="on" data-view="dash">🏠 工作台</button>
+      <button data-view="flow">📋 审批中心</button>
+      <button>📢 公告栏</button>
+      <button>👥 通讯录</button>
+      <button>🗓 日程</button>
+    </nav>
+    <div class="side-foot">
+      <span class="me-ava" id="meAva">?</span>
+      <div class="me-info"><div id="meName">—</div><div class="me-dept">智能协同部 · 审批员</div></div>
+      <button id="btnLogout" title="退出">⎋</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="tb-title" id="viewTitle">工作台</div>
+      <div class="tb-right">组织已认证 · 企业版 V4.2</div>
+    </header>
+
+    <!-- 工作台 -->
+    <section id="dashView" class="view">
+      <div class="stats">
+        <div class="stat"><div class="s-num" id="statPending">0</div><div class="s-label">待我处理的审批</div></div>
+        <div class="stat"><div class="s-num">12</div><div class="s-label">本周已办结</div></div>
+        <div class="stat"><div class="s-num">98.6%</div><div class="s-label">审批及时率</div></div>
+        <div class="stat"><div class="s-num">3</div><div class="s-label">未读公告</div></div>
+      </div>
+      <div class="dash-grid">
+        <div class="panel">
+          <div class="panel-head"><h3>待办优先级</h3><span>近 7 天</span></div>
+          <canvas id="chartCanvas" width="560" height="180"></canvas>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>公司公告</h3><span>更多 ▸</span></div>
+          <ul class="notice-list">
+            <li><span class="n-tag">通知</span>关于 2026 年度企业年金方案调整的说明<span class="n-date">11-12</span></li>
+            <li><span class="n-tag red">重要</span>信息安全月启动：请全员完成安全意识测评<span class="n-date">11-10</span></li>
+            <li><span class="n-tag">活动</span>秋季团建报名开启：两条路线可选<span class="n-date">11-08</span></li>
+            <li><span class="n-tag">通知</span>新办公区门禁系统切换安排（附常见问题）<span class="n-date">11-06</span></li>
+          </ul>
+        </div>
+      </div>
+      <button class="new-flow" id="btnNewFlow">＋ 发起审批</button>
+    </section>
+
+    <!-- 审批中心 -->
+    <section id="flowView" class="view hidden">
+      <div class="flow-wrap">
+        <div class="flow-list-panel">
+          <div class="fl-head">审批单 <button class="new-mini" id="btnNewFlow2">＋</button></div>
+          <div id="flowList" class="flow-list"></div>
+        </div>
+        <div class="flow-detail-panel">
+          <div id="flowEmpty" class="flow-empty">选择左侧审批单查看流程<br>或点击「＋ 发起审批」新建</div>
+          <div id="flowDetail" class="flow-detail hidden">
+            <div class="fd-head">
+              <div>
+                <div class="fd-title" id="fdTitle">审批单</div>
+                <div class="fd-meta" id="fdMeta"></div>
+              </div>
+              <div class="fd-stamp" id="fdStamp">审批中</div>
+            </div>
+            <div class="timeline" id="timeline"></div>
+            <div class="fd-input">
+              <textarea id="fdInputText" placeholder="补充说明 / 提交新材料…"></textarea>
+              <button id="fdSend">提交</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 发起审批弹窗 -->
+<div id="newOverlay" class="overlay hidden">
+  <div class="modal">
+    <h3>发起审批</h3>
+    <div class="m-sub">智能审批员将在线审核你提交的事项</div>
+    <div class="m-label">选择审批员</div>
+    <div id="auditorList" class="auditor-list"></div>
+    <div class="m-label">申请事项</div>
+    <textarea id="flowText" class="m-textarea" placeholder="例如：申请采购一批办公椅，预算 ¥4,400，明细见附件…"></textarea>
+    <div class="a-err" id="newErr"></div>
+    <div class="m-actions">
+      <button class="btn-cancel" id="btnNewCancel">取消</button>
+      <button class="btn-ok" id="btnNewOk">提交审批</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

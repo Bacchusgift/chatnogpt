@@ -1,0 +1,18 @@
+# 运行数据
+data/
+
+# 编译产物
+chatnogpt.exe
+chatnogpt-linux
+*.exe
+*.out
+
+# 真实域名映射（含内部信息，不入库；模板见 sites.example.json）
+sites.json
+
+# 本地交接文档（含服务器 IP/面板路径/测试账号）
+HANDOFF.md
+
+# Python 部署脚本缓存
+deploy/__pycache__/
+*.pyc

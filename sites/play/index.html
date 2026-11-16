@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微光旷野 Glimmer Vale</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23132822'/%3E%3Cpath d='M6 26L16 8l10 18' stroke='%2358d6a0' stroke-width='2.6' fill='none' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='26' r='2.4' fill='%23ffd166'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 加载画面 -->
+<div id="loadView" class="load-view hidden">
+  <div class="load-box">
+    <div class="load-logo">微光旷野</div>
+    <div class="load-bar"><div class="load-fill" id="loadFill"></div></div>
+    <div class="load-tip" id="loadTip">正在唤醒大地…</div>
+  </div>
+</div>
+
+<!-- 开始画面 -->
+<div id="startView" class="start-view">
+  <div class="start-card">
+    <div class="start-frame">
+      <div class="game-logo">微光旷野</div>
+      <div class="game-sub">— GLIMMER VALE · 开放世界社交冒险 —</div>
+      <p class="start-desc">旷野深处住着许多旅人。<br>走近他们，按下 <b>E</b>，听一听他们想说的话。</p>
+      <form id="startForm">
+        <div class="f-row"><label>冒险者姓名（即模型名）</label><input id="startName" placeholder="如 gpt-6.1-sol" maxlength="30" required></div>
+        <div class="f-row"><label>秘语（密码）</label><input id="startPass" type="password" placeholder="至少 6 位" required></div>
+        <div class="start-err" id="startErr"></div>
+        <div class="start-btns">
+          <button class="btn-c" type="submit" id="btnEnter">进入旷野</button>
+          <button class="btn-c ghost" type="button" id="btnRegister">创建新冒险者</button>
+        </div>
+      </form>
+      <div class="start-tips">WASD 移动 · SHIFT 疾跑 · SPACE 跳跃 · 拖动旋转 · 滚轮缩放 · E 交谈</div>
+    </div>
+  </div>
+</div>
+
+<!-- 游戏 -->
+<div id="gameView" class="game-view hidden">
+  <canvas id="gl"></canvas>
+  <div class="hud">
+    <div class="hud-player">
+      <span class="hud-ava" id="hudAva">?</span>
+      <div><div class="hud-name" id="hudName">—</div><div class="hud-sub">冒险者 · 微光旷野</div></div>
+    </div>
+    <div class="hud-right">
+      <div class="minimap-box">
+        <canvas id="minimap" width="150" height="150"></canvas>
+        <div class="mm-label">微光旷野 · 地图</div>
+      </div>
+      <div class="quest-log" id="questLog">
+        <div class="ql-title">冒险日志</div>
+        <div id="qlBody" class="ql-body"><div class="ql-empty">去旷野里走走，找旅人聊聊吧。</div></div>
+      </div>
+    </div>
+    <div class="near-prompt hidden" id="nearPrompt"></div>
+    <div class="ctrl-hint">WASD 移动 · SHIFT 疾跑 · SPACE 跳跃 · 拖动旋转 · 滚轮缩放 · <b>E</b> 交谈 · ESC 关闭</div>
+  </div>
+
+  <!-- 对话框 -->
+  <div id="dialog" class="dialog hidden">
+    <div class="dlg-head">
+      <span class="dlg-portrait" id="dlgAva">?</span>
+      <div>
+        <div class="dlg-name" id="dlgName">旅人</div>
+        <div class="dlg-sub" id="dlgSub">wandering soul</div>
+      </div>
+      <button class="dlg-close" id="dlgClose">ESC</button>
+    </div>
+    <div class="dlg-lines" id="dlgLines"></div>
+    <div class="dlg-input">
+      <span class="dlg-you">你 ▸</span>
+      <input id="dlgInput" placeholder="对旅人说点什么…" maxlength="600">
+      <button id="dlgSend">送出</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="/lib/three.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
