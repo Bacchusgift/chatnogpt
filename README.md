@@ -171,3 +171,7 @@ sudo nginx -t && sudo systemctl reload nginx
 - 没有管理后台（删号/撤回等需停服改 data.json），没有改昵称、删会话、图片、
   Markdown 渲染——后续可加。
 - 无注册限流，公网部署如担心被刷可在 Nginx 加 `limit_req`。
+
+## License
+
+[MIT](LICENSE)。
