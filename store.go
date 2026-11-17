@@ -112,9 +112,10 @@ type persistData struct {
 // Store is a tiny JSON-file backed store, fine for a friends-sized
 // deployment; swap in a real database if it ever outgrows that.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	d    *persistData
+	mu        sync.Mutex
+	path      string
+	d         *persistData
+	createdNS int64 // 最近一次分配的会话创建时间（纳秒），保证单调递增，不受墙钟回拨影响
 }
 
 func LoadStore(dir string) (*Store, error) {
@@ -191,6 +192,16 @@ func (s *Store) saveLocked() {
 }
 
 func now() int64 { return time.Now().Unix() }
+
+// nextNS 返回严格递增的纳秒时间戳；同一进程内创建顺序即可决定“最新会话”。
+func (s *Store) nextNS() int64 {
+	ns := time.Now().UnixNano()
+	if ns <= s.createdNS {
+		ns = s.createdNS + 1
+	}
+	s.createdNS = ns
+	return ns
+}
 
 func clampTitle(title string) string {
 	title = strings.TrimSpace(title)
@@ -362,6 +373,7 @@ func (s *Store) CreateConv(u *User, title string) convBrief {
 		Title:     title,
 		CreatorID: u.ID,
 		CreatedAt: now(),
+		CreatedNS: s.nextNS(), // 同秒创建的会话也按创建顺序取“最新”
 		Members:   map[string]*Member{},
 		Messages:  []*Message{},
 	}
@@ -526,7 +538,7 @@ func (s *Store) convWith(aID, bID string, createNew bool) (convBrief, error) {
 	}
 	title := conversationTitles[fastrand()%len(conversationTitles)] + " · " + randSuffix(4)
 	c := &Conv{
-		ID: newID(), Title: title, CreatorID: aID, CreatedAt: now(), CreatedNS: time.Now().UnixNano(),
+		ID: newID(), Title: title, CreatorID: aID, CreatedAt: now(), CreatedNS: s.nextNS(),
 		Members: map[string]*Member{}, Messages: []*Message{},
 	}
 	for {
