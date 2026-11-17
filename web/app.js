@@ -41,7 +41,7 @@ const state = {
   access: '完全访问', // 装饰性“权限档位”
   coverMode: localStorage.getItem('cngp_effort') === 'max', // 思考伪装（覆盖真实对话）
   coverLines: [],     // 服务端内置文稿
-  coverTimers: [],    // 未触发的覆盖定时器（切会话/关模式时统一清）
+  readIDs: new Set(), // 当前账号和会话中已展示的消息 id（仅本地）
 };
 
 /* ---------- 时间显示与消息通知 ---------- */
@@ -137,7 +137,7 @@ function coverKeyHash(s) {
 // 按消息 id 确定性取语料：同一消息在任何人、任何次刷新下覆盖文本一致
 function coverTextFor(key) {
   if (!state.coverLines.length) {
-    return '正在对输入做结构化分析，比照既有模式核对边界条件与副作用…';
+    return '先核对入口参数和上下游的约束，再梳理缓存、并发与持久化之间的调用顺序。对异常分支增加明确的超时和重试条件，避免重复请求改变最终状态；上线前还需对关键路径做回归验证。';
   }
   return state.coverLines[coverKeyHash(String(key)) % state.coverLines.length];
 }
@@ -145,6 +145,26 @@ function coverTextFor(key) {
 function msgKeyOf(id, nickname, content) {
   if (id) return String(id);
   return (nickname || '') + '|' + (content || '');
+}
+
+function readStorageKey(id) {
+  return `cngp_read_${state.me.id}_${id}`;
+}
+
+function loadReadIDs(id) {
+  try {
+    const ids = JSON.parse(localStorage.getItem(readStorageKey(id)) || '[]');
+    return new Set(Array.isArray(ids) ? ids.filter(x => typeof x === 'string') : []);
+  } catch { return new Set(); }
+}
+
+function rememberRead(id) {
+  if (!id || !state.cur || !state.me || state.readIDs.has(id)) return;
+  state.readIDs.add(id);
+  try {
+    // 控制本地存储大小；旧消息即使被裁掉，历史加载仍直接以密文呈现。
+    localStorage.setItem(readStorageKey(state.cur), JSON.stringify(Array.from(state.readIDs).slice(-2000)));
+  } catch {}
 }
 
 async function ensureCoverPool() {
@@ -155,12 +175,6 @@ async function ensureCoverPool() {
   } catch {}
 }
 
-function clearCoverTimers() {
-  for (const t of state.coverTimers) clearTimeout(t);
-  state.coverTimers = [];
-  document.querySelectorAll('#messages .cover-queued').forEach(row => row.classList.remove('cover-queued'));
-}
-
 // 按 Unicode 字符数截取文稿，不改气泡本身或消息原文。
 function ownCoverText(content) {
   const length = Array.from(content).length;
@@ -169,20 +183,11 @@ function ownCoverText(content) {
   return Array.from({ length }, (_, i) => source[i % source.length]).join('');
 }
 
-function scheduleOwnCover(row, delay = 1800) {
-  if (!state.coverMode || !row || !row.isConnected || row.classList.contains('cover-queued')) return;
-  row.classList.add('cover-queued');
-  const t = setTimeout(() => {
-    row.classList.remove('cover-queued');
-    if (!state.coverMode || !row.isConnected) return;
-    const source = row.querySelector('.own-original');
-    row.querySelector('.own-cover').textContent = ownCoverText(source.textContent);
-    row.classList.add('covered');
-  }, delay);
-  state.coverTimers.push(t);
-}
-
 function bindOwnReveal(row) {
+  row.addEventListener('pointermove', () => {
+    if (state.coverMode && row.classList.contains('covered')) row.classList.add('reveal-active');
+  });
+  row.addEventListener('pointerleave', () => row.classList.remove('reveal-active'));
   row.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
     row.classList.add('flash');
@@ -214,21 +219,6 @@ function coverTextInto(row) {
   if (tag && row.dataset.nickname) tag.textContent = row.dataset.nickname;
 }
 
-// 延迟盖层：≤5s 内随机自然延迟
-function scheduleCoverRow(row, delay) {
-  if (!row || !row.classList.contains('msg-ai') || !row.classList.contains('msg-real') ||
-      row.classList.contains('covered') || row.classList.contains('cover-queued')) return;
-  row.classList.add('cover-queued');
-  const t = setTimeout(() => {
-    row.classList.remove('cover-queued');
-    if (!state.coverMode || !row.isConnected) return;
-    coverTextInto(row);
-    row.classList.add('covered');
-    bindFlashlight(row);
-  }, delay);
-  state.coverTimers.push(t);
-}
-
 // 手电筒：光标位置写入 CSS 变量；触屏按下也能照 1.6s
 function bindFlashlight(row) {
   if (row.dataset.fxBound) return;
@@ -239,8 +229,11 @@ function bindFlashlight(row) {
     row.style.setProperty('--fx', (e.clientX - rect.left) + 'px');
     row.style.setProperty('--fy', (e.clientY - rect.top) + 'px');
   };
-  row.addEventListener('pointerenter', track);
-  row.addEventListener('pointermove', track);
+  row.addEventListener('pointermove', e => {
+    track(e);
+    if (state.coverMode) row.classList.add('reveal-active');
+  });
+  row.addEventListener('pointerleave', () => row.classList.remove('reveal-active'));
   row.addEventListener('pointerdown', e => {
     if (!row.classList.contains('covered') || e.pointerType === 'mouse') return;
     track(e);
@@ -251,18 +244,29 @@ function bindFlashlight(row) {
 }
 
 function uncoverAll() {
-  clearCoverTimers();
-  document.querySelectorAll('#messages .covered').forEach(r => r.classList.remove('covered'));
+  document.querySelectorAll('#messages .covered').forEach(r => r.classList.remove('covered', 'reveal-active'));
 }
 
 async function coverAllVisible() {
+  if (!state.coverMode) return;
+  // 先同步隐藏原文，再取文稿；网络慢时也不会闪现历史聊天。
+  document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach(row => {
+    coverTextInto(row);
+    row.classList.add('covered');
+    bindFlashlight(row);
+  });
+  document.querySelectorAll('#messages .msg-own:not(.covered)').forEach(row => {
+    const original = row.querySelector('.own-original');
+    if (!original) return;
+    row.querySelector('.own-cover').textContent = ownCoverText(original.textContent);
+    row.classList.add('covered');
+  });
   await ensureCoverPool();
   if (!state.coverMode) return;
-  document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach((r, i) => {
-    scheduleCoverRow(r, Math.min(400 + i * 260, 4800));
-  });
-  document.querySelectorAll('#messages .msg-own:not(.covered)').forEach((r, i) => {
-    scheduleOwnCover(r, Math.min(1200 + i * 260, 4800));
+  document.querySelectorAll('#messages .msg-ai.msg-real.covered:not(.cover-typing)').forEach(coverTextInto);
+  document.querySelectorAll('#messages .msg-own.covered').forEach(row => {
+    const original = row.querySelector('.own-original');
+    if (original) row.querySelector('.own-cover').textContent = ownCoverText(original.textContent);
   });
 }
 
@@ -316,6 +320,10 @@ function showApp() {
   // 恢复上次选择的思考强度
   $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
+  if (!state.cur) {
+    $('#messages').replaceChildren();
+    appendWelcome('ChatNoGPT');
+  }
   if (state.coverMode) ensureCoverPool();
   loadConvs();
 }
@@ -323,13 +331,27 @@ function showApp() {
 function doLogoutLocal() {
   localStorage.removeItem('cngp_token');
   state.token = '';
+  state.me = null;
   state.cur = null;
+  state.curInfo = null;
+  state.convs = [];
+  state.gen++;
+  state.queue = [];
+  state.animating = false;
+  state.readIDs = new Set();
+  state.seenMsg.clear();
+  state.pending.clear();
   state.wsConv = null;
   state.pendingSend = null;
   state.target = null;
-  clearCoverTimers();
   for (const url of state.imageURLs.values()) URL.revokeObjectURL(url);
   state.imageURLs.clear();
+  removeAttachment();
+  $('#input').value = '';
+  $('#messages').replaceChildren();
+  $('#convList').replaceChildren();
+  $('#convTitle').textContent = 'ChatNoGPT';
+  $('#btnRenameConv').classList.add('hidden');
   document.body.classList.remove('cover-on');
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   showAuth();
@@ -458,13 +480,13 @@ async function selectConv(id) {
   state.cur = id;
   state.gen++;
   const gen = state.gen;
+  state.readIDs = loadReadIDs(id);
   state.queue = [];
   state.animating = false;
   state.pending.clear();
   state.seenMsg = new Set();
   state.lastTS = 0;
   state.lastRenderTS = 0;
-  clearCoverTimers();
   state.thinkingRow = null;
   hideTyping();
   renderConvList();
@@ -482,6 +504,8 @@ async function selectConv(id) {
       state.target = null;
       $('#modelBtn').style.display = 'none';
     }
+    if (state.coverMode) await ensureCoverPool();
+    if (state.cur !== id || state.gen !== gen) return;
     const md = await api(`/api/conversations/${id}/messages`);
     if (state.cur !== id || state.gen !== gen) return;
     const box = $('#messages');
@@ -493,9 +517,9 @@ async function selectConv(id) {
       if (m.ts > state.lastTS) state.lastTS = m.ts;
       if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
       else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+      rememberRead(m.id);
     }
     scrollBottom(true);
-    if (state.coverMode) coverAllVisible();
     connectWS(id);
     $('#input').focus();
   } catch (e) { toast(e.message); }
@@ -562,9 +586,9 @@ function appendOwn(content, ts, msgId, imageID) {
   }
   realWrap.appendChild(b);
   wrap.appendChild(realWrap);
+  if (state.coverMode && content) wrap.classList.add('covered');
   $('#messages').appendChild(wrap);
   bindOwnReveal(wrap);
-  if (state.coverMode && content) scheduleOwnCover(wrap);
 }
 
 function appendAIRow(nickname) {
@@ -596,6 +620,10 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
   r.row.dataset.nickname = nickname;
   r.row.appendChild(makeCoverLayer());
   coverTextInto(r.row);
+  if (state.coverMode) {
+    r.row.classList.add('covered');
+    bindFlashlight(r.row);
+  }
 }
 
 function scrollBottom(force) {
@@ -656,12 +684,19 @@ async function syncMissed(id) {
         state.pending.delete(m.client_msg_id);
         state.seenMsg.add(m.id);
         if (m.ts > state.lastTS) state.lastTS = m.ts;
+        rememberRead(m.id);
         continue;
       }
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
-      else enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true, m.image_id);
+      if (m.sender_id === state.me.id) {
+        appendOwn(m.content, m.ts, m.id, m.image_id);
+        rememberRead(m.id);
+      } else if (state.coverMode && state.readIDs.has(m.id)) {
+        appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+      } else {
+        enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true, m.image_id);
+      }
       scrollFollow();
     }
   } catch {}
@@ -686,9 +721,11 @@ function handleEvent(ev) {
       // 自己发的：同标签页靠乐观渲染，这里只处理回显确认和其他标签页
       if (ev.client_msg_id && state.pending.has(ev.client_msg_id)) {
         state.pending.delete(ev.client_msg_id);
+        rememberRead(ev.id);
         return;
       }
       appendOwn(ev.content, ev.ts, ev.id, ev.image_id);
+      rememberRead(ev.id);
       scrollFollow();
     } else {
       // 记录“思考时长”：从看到对方开始打字（或本条开始渲染思考）到现在
@@ -699,7 +736,7 @@ function handleEvent(ev) {
       hideTyping();
       enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true, ev.image_id);
       // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）
-      notifyMessage(state.cur, ev.nickname, ev.content);
+      notifyMessage(state.cur, ev.nickname, state.coverMode ? '收到新回复，点击查看' : ev.content);
     }
   } else if (ev.type === 'typing') {
     if (ev.sender_id !== state.me.id) showTyping(ev.nickname);
@@ -787,6 +824,7 @@ function pumpQueue() {
 
 function animateAI(item) {
   if (item.gen !== state.gen) { state.animating = false; pumpQueue(); return; }
+  const disguised = state.coverMode;
   if (item.ts) ensureDivider(item.ts);
   const r = appendAIRow(item.nickname);
   let body;
@@ -808,38 +846,44 @@ function animateAI(item) {
   r.row.dataset.nickname = item.nickname;
   r.row.appendChild(makeCoverLayer());
   coverTextInto(r.row);
+  // 最高档从第一个字符起就在密文层输出，不先打印原文再覆盖。
+  if (disguised) {
+    body.textContent = item.content;
+    if (item.imageID) appendImage(body, item.imageID);
+    r.row.classList.add('covered', 'cover-typing');
+    bindFlashlight(r.row);
+  }
+  const output = disguised ? r.row.querySelector('.cover-body') : body;
+  const glyphs = Array.from(disguised ? coverTextFor(r.row.dataset.msgKey) : item.content);
+  if (disguised) output.textContent = '';
+  const textNode = document.createTextNode('');
   const cursor = document.createElement('span');
   cursor.className = 'cursor';
-  const textNode = document.createTextNode('');
-  body.append(textNode, cursor);
+  output.append(textNode, cursor);
   scrollFollow();
 
-  const text = item.content;
-  const total = text.length;
+  const total = glyphs.length;
   let i = 0;
-  const chunk = Math.max(1, Math.round(total / 300)); // 长消息加速，整体不超过约 3.5 秒
+  const chunk = Math.max(1, Math.ceil(total / 230));
   const step = () => {
-    if (item.gen !== state.gen) return; // 聊天已切换，动画作废
+    if (item.gen !== state.gen) return;
     i = Math.min(total, i + chunk);
-    textNode.data = text.slice(0, i);
+    textNode.data = glyphs.slice(0, i).join('');
     scrollFollow();
-    if (i < total) setTimeout(step, 12);
-    else {
+    if (i < total) {
+      const pause = /[。！？\n]/.test(glyphs[i - 1]) ? 160 : 26;
+      setTimeout(step, pause);
+    } else {
       cursor.remove();
-      if (item.imageID) appendImage(body, item.imageID);
+      if (!disguised && item.imageID) appendImage(body, item.imageID);
+      r.row.classList.remove('cover-typing');
+      rememberRead(item.msgKey);
       state.animating = false;
+      if (state.coverMode && !disguised) coverAllVisible();
       pumpQueue();
-      if (state.coverMode) {
-        scheduleCoverRow(r.row, 1500 + Math.floor(Math.random() * 2500));
-        if (item.isPeer) {
-          document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach((row, i) => {
-            scheduleCoverRow(row, 1800 + i * 260 + Math.floor(Math.random() * 600));
-          });
-        }
-      }
     }
   };
-  setTimeout(step, 12);
+  setTimeout(step, 26);
 }
 
 /* ---------- 模型选择器 ---------- */

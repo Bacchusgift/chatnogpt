@@ -112,8 +112,8 @@ input, textarea { font: inherit; color: inherit; }
 }
 /* 原文始终参与排版，伪装文字只在原气泡内绘制，不改变其宽高。 */
 .msg-own .own-cover { display: none; }
-body.cover-on .msg-own.covered:not(:hover):not(.flash) .own-original { visibility: hidden; }
-body.cover-on .msg-own.covered:not(:hover):not(.flash) .own-cover {
+body.cover-on .msg-own.covered:not(.reveal-active):not(.flash) .own-original { visibility: hidden; }
+body.cover-on .msg-own.covered:not(.reveal-active):not(.flash) .own-cover {
   display: block; position: absolute; inset: 10px 18px;
   overflow: hidden; white-space: pre-wrap; word-break: break-word;
 }
@@ -144,12 +144,12 @@ body.cover-on .msg-real.covered > .cover-layer { display: block; }
 /* 无交互时只显示伪装；悬停/触屏时两层使用互补的硬边遮罩。
    不改变真实内容的排版和透明度，圆孔内只有原文，孔外只有伪装。 */
 body.cover-on .msg-real.covered > .real-wrap { visibility: hidden; }
-body.cover-on .msg-real.covered:is(:hover, .flash) > .real-wrap {
+body.cover-on .msg-real.covered:is(.reveal-active, .flash) > .real-wrap {
   visibility: visible;
   -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), #000 calc(var(--hole) - 1px), transparent var(--hole));
   mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), #000 calc(var(--hole) - 1px), transparent var(--hole));
 }
-body.cover-on .msg-real.covered:is(:hover, .flash) > .cover-layer {
+body.cover-on .msg-real.covered:is(.reveal-active, .flash) > .cover-layer {
   -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
   mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
 }
@@ -171,13 +171,13 @@ body.cover-on .msg-real.covered::after {
   box-shadow: 0 0 26px rgba(140, 235, 190, .20), inset 0 0 34px rgba(140, 235, 190, .10);
   opacity: 0; transition: opacity .25s ease; pointer-events: none;
 }
-body.cover-on .msg-real.covered:hover::before,
-body.cover-on .msg-real.covered:hover::after,
+body.cover-on .msg-real.covered.reveal-active::before,
+body.cover-on .msg-real.covered.reveal-active::after,
 body.cover-on .msg-real.covered.flash::before,
 body.cover-on .msg-real.covered.flash::after {
   opacity: 1;
 }
-body.cover-on .msg-real.covered:hover::after,
+body.cover-on .msg-real.covered.reveal-active::after,
 body.cover-on .msg-real.covered.flash::after {
   animation: torchPulse 2.4s ease-in-out infinite;
 }
