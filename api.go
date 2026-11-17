@@ -57,7 +57,7 @@ func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name     string `json:"name"`     // 模型名称（新流程）
+		Name     string `json:"name"` // 模型名称（新流程）
 		Password string `json:"password"`
 		Username string `json:"username"` // 兼容旧字段
 		Nickname string `json:"nickname"`
@@ -229,6 +229,31 @@ func (s *server) handleConvWith(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"conversation": brief})
 }
 
+func (s *server) handleConvNew(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	var req struct {
+		PeerID string `json:"peer_id"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	brief, err := s.store.NewConvWith(u.ID, req.PeerID)
+	if err != nil {
+		writeErr(w, statusOf(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversation": brief})
+}
+
 func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 	u := s.authUser(r)
 	if u == nil {
@@ -241,6 +266,20 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		detail, err := s.store.ConvDetail(convID, u.ID)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
+	case len(parts) == 1 && r.Method == http.MethodPatch:
+		var req struct {
+			Title string `json:"title"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		detail, err := s.store.RenameConv(convID, u.ID, req.Title)
 		if err != nil {
 			writeErr(w, statusOf(err), err)
 			return

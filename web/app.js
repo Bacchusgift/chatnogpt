@@ -19,6 +19,7 @@ const state = {
   curInfo: null,      // 当前聊天详情（含 peer 信息）
   target: null,       // 模型选择器当前选中 {id, name}
   ws: null,
+  wsConv: null,
   pending: new Set(), // 已发出、等待服务器回显的 client_msg_id
   seenMsg: new Set(), // 当前聊天已渲染过的消息 id（去重/断线补拉）
   lastTS: 0,          // 当前聊天已收到的最大时间戳（断线补拉用）
@@ -35,9 +36,11 @@ const state = {
   thinkingRow: null,
   thinkingSecEl: null,
   pendingSend: null,  // 会话尚未连上 WS 时暂存待发消息
+  attachment: null,   // 待发送的已压缩 WebP
+  imageURLs: new Map(), // 已认证图片的本地 blob URL
   access: '完全访问', // 装饰性“权限档位”
   coverMode: localStorage.getItem('cngp_effort') === 'max', // 思考伪装（覆盖真实对话）
-  coverLines: [],     // 服务端语料池（GLM 生成或内置）
+  coverLines: [],     // 服务端内置文稿
   coverTimers: [],    // 未触发的覆盖定时器（切会话/关模式时统一清）
 };
 
@@ -122,7 +125,7 @@ function askNotifyPermission() {
 
 const EFFORTS = [
   { k: 'off', label: '关闭', desc: '显示真实对话' },
-  { k: 'max', label: '最高', desc: '对方回复覆盖为技术分析，自己发送的内容保持原样' },
+  { k: 'max', label: '最高', desc: '对话显示为技术分析，悬停查看原文' },
 ];
 
 function coverKeyHash(s) {
@@ -158,7 +161,37 @@ function clearCoverTimers() {
   document.querySelectorAll('#messages .cover-queued').forEach(row => row.classList.remove('cover-queued'));
 }
 
-// 只覆盖对方（AI）消息；自己发送的内容始终保持原样。
+// 按 Unicode 字符数截取文稿，不改气泡本身或消息原文。
+function ownCoverText(content) {
+  const length = Array.from(content).length;
+  if (!length) return '';
+  const source = Array.from(coverTextFor(content) + coverTextFor(content + '-more'));
+  return Array.from({ length }, (_, i) => source[i % source.length]).join('');
+}
+
+function scheduleOwnCover(row, delay = 1800) {
+  if (!state.coverMode || !row || !row.isConnected || row.classList.contains('cover-queued')) return;
+  row.classList.add('cover-queued');
+  const t = setTimeout(() => {
+    row.classList.remove('cover-queued');
+    if (!state.coverMode || !row.isConnected) return;
+    const source = row.querySelector('.own-original');
+    row.querySelector('.own-cover').textContent = ownCoverText(source.textContent);
+    row.classList.add('covered');
+  }, delay);
+  state.coverTimers.push(t);
+}
+
+function bindOwnReveal(row) {
+  row.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    row.classList.add('flash');
+    clearTimeout(row.flashTimer);
+    row.flashTimer = setTimeout(() => row.classList.remove('flash'), 1600);
+  });
+}
+
+// 对方回复使用整段技术文稿，悬停用原位圆孔显示原文。
 function makeCoverLayer() {
   const layer = document.createElement('div');
   layer.className = 'cover-layer cover-ai';
@@ -219,7 +252,7 @@ function bindFlashlight(row) {
 
 function uncoverAll() {
   clearCoverTimers();
-  document.querySelectorAll('#messages .msg-real.covered').forEach(r => r.classList.remove('covered'));
+  document.querySelectorAll('#messages .covered').forEach(r => r.classList.remove('covered'));
 }
 
 async function coverAllVisible() {
@@ -227,6 +260,9 @@ async function coverAllVisible() {
   if (!state.coverMode) return;
   document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach((r, i) => {
     scheduleCoverRow(r, Math.min(400 + i * 260, 4800));
+  });
+  document.querySelectorAll('#messages .msg-own:not(.covered)').forEach((r, i) => {
+    scheduleOwnCover(r, Math.min(1200 + i * 260, 4800));
   });
 }
 
@@ -238,7 +274,7 @@ function setEffort(k) {
   document.body.classList.toggle('cover-on', max);
   if (max) {
     coverAllVisible();
-    toast('思考伪装已开启：对方回复将覆盖为技术分析，悬停可透视');
+    toast('思考伪装已开启：悬停消息可查看原文');
   } else {
     uncoverAll();
     toast('已显示真实对话');
@@ -280,6 +316,7 @@ function showApp() {
   // 恢复上次选择的思考强度
   $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
+  if (state.coverMode) ensureCoverPool();
   loadConvs();
 }
 
@@ -287,8 +324,12 @@ function doLogoutLocal() {
   localStorage.removeItem('cngp_token');
   state.token = '';
   state.cur = null;
+  state.wsConv = null;
+  state.pendingSend = null;
   state.target = null;
   clearCoverTimers();
+  for (const url of state.imageURLs.values()) URL.revokeObjectURL(url);
+  state.imageURLs.clear();
   document.body.classList.remove('cover-on');
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   showAuth();
@@ -329,10 +370,86 @@ function renderConvList() {
     b.type = 'button';
     b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
     b.textContent = c.title;
-    b.title = c.title;
+    b.title = c.title + '（双击修改标题）';
     b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
+    b.ondblclick = () => renameConv(c.id, c.title);
     list.appendChild(b);
   }
+}
+
+function openPicker(title) {
+  const root = $('#modalRoot');
+  root.innerHTML = '';
+  const overlay = document.createElement('div');
+  overlay.className = 'picker-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'picker-panel';
+  const heading = document.createElement('h2');
+  heading.textContent = title;
+  const cancel = document.createElement('button');
+  cancel.className = 'cancel';
+  cancel.textContent = '取消';
+  const close = () => { root.innerHTML = ''; };
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  cancel.onclick = close;
+  panel.append(heading, cancel);
+  overlay.appendChild(panel);
+  root.appendChild(overlay);
+  return { panel, cancel, close };
+}
+
+async function startNewConversation() {
+  const { panel, cancel, close } = openPicker('选择模型，开始新会话');
+  try {
+    const d = await api('/api/models');
+    const models = d.models || [];
+    if (!models.length) {
+      const p = document.createElement('p');
+      p.textContent = '暂无其他模型账号';
+      panel.insertBefore(p, cancel);
+    }
+    for (const model of models) {
+      const btn = document.createElement('button');
+      btn.textContent = model.name;
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          const created = await api('/api/conversations/new', { body: { peer_id: model.id } });
+          close();
+          await selectConv(created.conversation.id);
+          await loadConvs(true);
+          closeSidebarMobile();
+        } catch (e) { btn.disabled = false; toast(e.message); }
+      };
+      panel.insertBefore(btn, cancel);
+    }
+  } catch (e) { close(); toast(e.message); }
+}
+
+function renameConv(id, title) {
+  const { panel, cancel, close } = openPicker('修改会话标题');
+  const field = document.createElement('input');
+  field.value = title;
+  field.maxLength = 60;
+  const save = document.createElement('button');
+  save.textContent = '保存标题';
+  save.onclick = async () => {
+    const next = field.value.trim();
+    if (!next) return;
+    try {
+      const result = await api('/api/conversations/' + encodeURIComponent(id), {
+        method: 'PATCH', body: { title: next },
+      });
+      close();
+      if (state.cur === id) $('#convTitle').textContent = result.conversation.title;
+      await loadConvs(true);
+    } catch (e) { toast(e.message); }
+  };
+  field.onkeydown = e => { if (e.key === 'Enter') save.click(); };
+  panel.insertBefore(field, cancel);
+  panel.insertBefore(save, cancel);
+  field.focus();
+  field.select();
 }
 
 /* ---------- 聊天切换与消息渲染 ---------- */
@@ -340,6 +457,7 @@ function renderConvList() {
 async function selectConv(id) {
   state.cur = id;
   state.gen++;
+  const gen = state.gen;
   state.queue = [];
   state.animating = false;
   state.pending.clear();
@@ -352,8 +470,10 @@ async function selectConv(id) {
   renderConvList();
   try {
     const d = await api('/api/conversations/' + id);
+    if (state.cur !== id || state.gen !== gen) return;
     state.curInfo = d.conversation;
     $('#convTitle').textContent = d.conversation.title;
+    $('#btnRenameConv').classList.remove('hidden');
     // 打开某个聊天 = 选中了对方那个“模型”
     if (d.conversation.peer_id) {
       setTarget({ id: d.conversation.peer_id, name: d.conversation.peer_nickname });
@@ -363,6 +483,7 @@ async function selectConv(id) {
       $('#modelBtn').style.display = 'none';
     }
     const md = await api(`/api/conversations/${id}/messages`);
+    if (state.cur !== id || state.gen !== gen) return;
     const box = $('#messages');
     box.innerHTML = '';
     const msgs = md.messages || [];
@@ -370,8 +491,8 @@ async function selectConv(id) {
     for (const m of msgs) {
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id);
-      else appendAIStatic(m.nickname, m.content, m.ts, m.id);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
+      else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
     }
     scrollBottom(true);
     if (state.coverMode) coverAllVisible();
@@ -397,7 +518,27 @@ function removeWelcome() {
   if (w) w.remove();
 }
 
-function appendOwn(content, ts, msgId) {
+async function appendImage(parent, id) {
+  const img = document.createElement('img');
+  img.className = 'chat-image';
+  img.alt = '聊天图片';
+  img.loading = 'lazy';
+  parent.appendChild(img);
+  try {
+    if (!state.imageURLs.has(id)) {
+      const res = await fetch('/api/images/' + encodeURIComponent(id), {
+        headers: { Authorization: 'Bearer ' + state.token },
+      });
+      if (!res.ok) throw new Error('无法读取图片');
+      state.imageURLs.set(id, URL.createObjectURL(await res.blob()));
+    }
+    if (!img.isConnected) return;
+    img.src = state.imageURLs.get(id);
+    img.onclick = () => window.open(img.src, '_blank', 'noopener,noreferrer');
+  } catch { img.alt = '图片加载失败'; }
+}
+
+function appendOwn(content, ts, msgId, imageID) {
   removeWelcome();
   const wrap = document.createElement('div');
   wrap.className = 'msg-own';
@@ -405,7 +546,16 @@ function appendOwn(content, ts, msgId) {
   realWrap.className = 'real-wrap';
   const b = document.createElement('div');
   b.className = 'bubble';
-  b.textContent = content;
+  if (content) {
+    const original = document.createElement('span');
+    original.className = 'own-original';
+    original.textContent = content;
+    const covered = document.createElement('span');
+    covered.className = 'own-cover';
+    covered.textContent = ownCoverText(content);
+    b.append(original, covered);
+  }
+  if (imageID) appendImage(b, imageID);
   if (ts) {
     ensureDivider(ts);
     b.title = fullStamp(ts);
@@ -413,6 +563,8 @@ function appendOwn(content, ts, msgId) {
   realWrap.appendChild(b);
   wrap.appendChild(realWrap);
   $('#messages').appendChild(wrap);
+  bindOwnReveal(wrap);
+  if (state.coverMode && content) scheduleOwnCover(wrap);
 }
 
 function appendAIRow(nickname) {
@@ -430,12 +582,13 @@ function appendAIRow(nickname) {
   return { row, label, realWrap };
 }
 
-function appendAIStatic(nickname, content, ts, msgId) {
+function appendAIStatic(nickname, content, ts, msgId, imageID) {
   if (ts) ensureDivider(ts);
   const r = appendAIRow(nickname);
   const body = document.createElement('div');
   body.className = 'ai-body';
   body.textContent = content;
+  if (imageID) appendImage(body, imageID);
   if (ts) body.title = fullStamp(ts);
   r.realWrap.appendChild(body);
   r.row.classList.add('msg-real');
@@ -466,8 +619,16 @@ function connectWS(id) {
     `${proto}://${location.host}/ws?conv=${encodeURIComponent(id)}&token=${encodeURIComponent(state.token)}`
   );
   state.ws = ws;
-  ws.onopen = () => { syncMissed(id); flushPending(); };
-  ws.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch {} };
+  state.wsConv = id;
+  ws.onopen = () => {
+    if (state.cur !== id || state.ws !== ws) { ws.close(); return; }
+    syncMissed(id);
+    flushPending(id);
+  };
+  ws.onmessage = e => {
+    if (state.cur !== id || state.ws !== ws) return;
+    try { handleEvent(JSON.parse(e.data)); } catch {}
+  };
   ws.onclose = () => {
     if (state.cur === id && state.ws === ws) {
       setTimeout(async () => {
@@ -488,6 +649,7 @@ function connectWS(id) {
 async function syncMissed(id) {
   try {
     const d = await api(`/api/conversations/${id}/messages?after_ts=${state.lastTS}`);
+    if (state.cur !== id) return;
     for (const m of d.messages || []) {
       if (state.seenMsg.has(m.id)) continue;
       if (m.client_msg_id && state.pending.has(m.client_msg_id)) {
@@ -498,18 +660,19 @@ async function syncMissed(id) {
       }
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id);
-      else enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
+      else enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true, m.image_id);
       scrollFollow();
     }
   } catch {}
 }
 
-function flushPending() {
-  if (state.pendingSend && state.ws && state.ws.readyState === 1) {
-    const t = state.pendingSend;
+function flushPending(id = state.cur) {
+  if (state.pendingSend && state.pendingSend.convID === id && state.cur === id &&
+      state.wsConv === id && state.ws && state.ws.readyState === 1) {
+    const { payload } = state.pendingSend;
     state.pendingSend = null;
-    doSend(t);
+    doSend(payload);
   }
 }
 
@@ -525,7 +688,7 @@ function handleEvent(ev) {
         state.pending.delete(ev.client_msg_id);
         return;
       }
-      appendOwn(ev.content, ev.ts, ev.id);
+      appendOwn(ev.content, ev.ts, ev.id, ev.image_id);
       scrollFollow();
     } else {
       // 记录“思考时长”：从看到对方开始打字（或本条开始渲染思考）到现在
@@ -534,7 +697,7 @@ function handleEvent(ev) {
         thinkSec = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));
       }
       hideTyping();
-      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true);
+      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true, ev.image_id);
       // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）
       notifyMessage(state.cur, ev.nickname, ev.content);
     }
@@ -595,8 +758,8 @@ function hideTyping() {
 
 /* ---------- 播放队列：思考 → 已思考 N 秒 → 打字机 ---------- */
 
-function enqueueAI(nickname, content, thinkSec, ts, msgKey, isPeer) {
-  state.queue.push({ nickname, content, thinkSec, ts, msgKey, isPeer, gen: state.gen });
+function enqueueAI(nickname, content, thinkSec, ts, msgKey, isPeer, imageID) {
+  state.queue.push({ nickname, content, thinkSec, ts, msgKey, isPeer, imageID, gen: state.gen });
   pumpQueue();
 }
 
@@ -663,6 +826,7 @@ function animateAI(item) {
     if (i < total) setTimeout(step, 12);
     else {
       cursor.remove();
+      if (item.imageID) appendImage(body, item.imageID);
       state.animating = false;
       pumpQueue();
       if (state.coverMode) {
@@ -806,47 +970,107 @@ function renderAccessMenu() {
 const input = $('#input');
 const btnSend = $('#btnSend');
 
-function doSend(text) {
+function updateSendButton() {
+  btnSend.disabled = !input.value.trim() && !state.attachment;
+}
+
+function removeAttachment() {
+  if (state.attachment) URL.revokeObjectURL(state.attachment.preview);
+  state.attachment = null;
+  $('#imagePreview').replaceChildren();
+  $('#imagePreview').classList.add('hidden');
+  $('#imageInput').value = '';
+  updateSendButton();
+}
+
+async function compressWebP(file) {
+  if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
+  if (file.size > 25 * 1024 * 1024) throw new Error('原图不能超过 25 MB');
+  const source = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    if (image.naturalWidth * image.naturalHeight > 50_000_000) throw new Error('图片像素过大');
+    let scale = Math.min(1, 1440 / Math.max(image.naturalWidth, image.naturalHeight));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', Math.max(.45, .78 - attempt * .08)));
+      if (!blob || blob.type !== 'image/webp') throw new Error('当前浏览器无法生成 WebP 图片');
+      if (blob.size <= 900 * 1024) return blob;
+      scale *= .72;
+    }
+    throw new Error('图片压缩后仍超过 900 KB，请换一张图片');
+  } finally { URL.revokeObjectURL(source); }
+}
+
+async function uploadImage(blob) {
+  const form = new FormData();
+  form.append('file', blob, 'image.webp');
+  const res = await fetch('/api/images', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + state.token }, body: form,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || '图片上传失败');
+  }
+  return (await res.json()).id;
+}
+
+function doSend(payload) {
   const cmid = (crypto.randomUUID
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  appendOwn(text, Math.floor(Date.now() / 1000));
+  appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID);
   scrollFollow();
   btnSend.disabled = true;
-  state.ws.send(JSON.stringify({ type: 'msg', content: text, client_msg_id: cmid }));
+  state.ws.send(JSON.stringify({ type: 'msg', content: payload.text,
+    image_id: payload.imageID || '', client_msg_id: cmid }));
 }
 
 async function send() {
+  if (state.sending) return;
   const text = input.value.trim();
-  if (!text) return;
+  const attachment = state.attachment;
+  if (!text && !attachment) return;
   if (!state.target) { toast('请先在左下角选择一个模型'); return; }
-  input.value = '';
-  autoGrow();
+  const targetID = state.target.id;
+  const initialConv = state.cur;
+  state.sending = true;
   btnSend.disabled = true;
-
-  // 当前打开的聊天正是与该模型的会话 → 直接发
-  if (state.cur && state.curInfo && state.curInfo.peer_id === state.target.id) {
-    if (state.ws && state.ws.readyState === 1) doSend(text);
-    else state.pendingSend = text; // 重连后自动发出
-    return;
-  }
-  // 否则定位（或自动创建）与该模型的会话，连上后自动发出
   try {
-    const d = await api('/api/conversations/with', { body: { peer_id: state.target.id } });
-    state.pendingSend = text;
-    if (d.conversation.id === state.cur) {
-      flushPending();
-    } else {
-      await loadConvs(true);
-      await selectConv(d.conversation.id);
+    const imageID = attachment ? await uploadImage(attachment.blob) : '';
+    if (state.cur !== initialConv || state.target?.id !== targetID) {
+      throw new Error('发送期间切换了会话，请重新发送');
     }
-  } catch (e) {
-    toast(e.message);
-    input.value = text;
+    const payload = { text, imageID };
+    if (state.cur && state.curInfo?.peer_id === targetID) {
+      if (state.wsConv === state.cur && state.ws?.readyState === 1) doSend(payload);
+      else state.pendingSend = { convID: state.cur, payload };
+    } else {
+      const d = await api('/api/conversations/with', { body: { peer_id: targetID } });
+      if (state.cur !== initialConv || state.target?.id !== targetID) {
+        throw new Error('发送期间切换了会话，请重新发送');
+      }
+      state.pendingSend = { convID: d.conversation.id, payload };
+      if (d.conversation.id === state.cur) flushPending(d.conversation.id);
+      else {
+        await selectConv(d.conversation.id);
+        if (state.cur !== d.conversation.id) throw new Error('会话已切换，请重新发送');
+        await loadConvs(true);
+      }
+    }
+    input.value = '';
     autoGrow();
-    btnSend.disabled = false;
-  }
+    if (attachment === state.attachment) removeAttachment();
+  } catch (e) {
+    if (state.pendingSend?.payload?.text === text) state.pendingSend = null;
+    toast(e.message);
+  } finally { state.sending = false; updateSendButton(); }
 }
 
 function autoGrow() {
@@ -931,6 +1155,35 @@ function bind() {
     $('#sideMask').classList.add('show');
   };
   $('#sideMask').onclick = closeSidebarMobile;
+  $('#btnNewConv').onclick = startNewConversation;
+  $('#btnRenameConv').onclick = () => {
+    if (state.cur && state.curInfo) renameConv(state.cur, $('#convTitle').textContent);
+  };
+  $('#btnAttach').onclick = () => $('#imageInput').click();
+  $('#imageInput').onchange = async () => {
+    const file = $('#imageInput').files[0];
+    if (!file) return;
+    try {
+      const blob = await compressWebP(file);
+      if ($('#imageInput').files[0] !== file) return;
+      removeAttachment();
+      const preview = URL.createObjectURL(blob);
+      state.attachment = { blob, preview };
+      const box = $('#imagePreview');
+      const img = document.createElement('img');
+      img.src = preview;
+      img.alt = '待发送图片';
+      const size = document.createElement('span');
+      size.textContent = Math.round(blob.size / 1024) + ' KB · WebP';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '移除图片';
+      remove.onclick = removeAttachment;
+      box.replaceChildren(img, size, remove);
+      box.classList.remove('hidden');
+      updateSendButton();
+    } catch (e) { $('#imageInput').value = ''; toast(e.message); }
+  };
 
   modelBtn.addEventListener('click', e => {
     e.stopPropagation();
@@ -961,7 +1214,7 @@ function bind() {
   btnSend.onclick = send;
   input.addEventListener('input', () => {
     autoGrow();
-    btnSend.disabled = input.value.trim() === '';
+    updateSendButton();
     const nowT = Date.now();
     if (state.ws && state.ws.readyState === 1 && input.value &&
         nowT - state.lastTypingSent > 1800) {

@@ -46,6 +46,7 @@ type Message struct {
 	Content     string `json:"content"`
 	TS          int64  `json:"ts"`
 	ClientMsgID string `json:"client_msg_id,omitempty"`
+	ImageID     string `json:"image_id,omitempty"`
 }
 
 type Conv struct {
@@ -54,6 +55,7 @@ type Conv struct {
 	Title     string             `json:"title"` // 创建者取的原始标题
 	CreatorID string             `json:"creator_id"`
 	CreatedAt int64              `json:"created_at"`
+	CreatedNS int64              `json:"created_ns,omitempty"`
 	Members   map[string]*Member `json:"members"`
 	Messages  []*Message         `json:"messages"`
 }
@@ -93,13 +95,18 @@ type convOut struct {
 	Members      []publicMember `json:"members"`
 }
 
+type imageRecord struct {
+	OwnerID string `json:"owner_id"`
+}
+
 type persistData struct {
-	Users      map[string]*User  `json:"users"`
-	ByName     map[string]string `json:"users_by_name"`       // username(小写) -> user id
-	ByNick     map[string]string `json:"users_by_nick"`       // 模型名称(小写) -> user id
-	Tokens     map[string]string `json:"tokens"`
-	ConvByCode map[string]string `json:"conv_by_code"`
-	Convs      map[string]*Conv  `json:"convs"`
+	Images     map[string]imageRecord `json:"images"`
+	Users      map[string]*User       `json:"users"`
+	ByName     map[string]string      `json:"users_by_name"` // username(小写) -> user id
+	ByNick     map[string]string      `json:"users_by_nick"` // 模型名称(小写) -> user id
+	Tokens     map[string]string      `json:"tokens"`
+	ConvByCode map[string]string      `json:"conv_by_code"`
+	Convs      map[string]*Conv       `json:"convs"`
 }
 
 // Store is a tiny JSON-file backed store, fine for a friends-sized
@@ -151,12 +158,16 @@ func LoadStore(dir string) (*Store, error) {
 	if d.Convs == nil {
 		d.Convs = map[string]*Conv{}
 	}
+	if d.Images == nil {
+		d.Images = map[string]imageRecord{}
+	}
 	s.d = d
 	return s, nil
 }
 
 func freshData() *persistData {
 	return &persistData{
+		Images:     map[string]imageRecord{},
 		Users:      map[string]*User{},
 		ByName:     map[string]string{},
 		ByNick:     map[string]string{},
@@ -478,10 +489,19 @@ func (s *Store) ConvDetail(convID, userID string) (convOut, error) {
 	}, nil
 }
 
-// ConvWith returns the existing 1:1 conversation between the two users, or
-// creates it on the fly. Each side's local title is the other's nickname, so
-// both see the chat labelled with the "model" they are talking to.
+// NewConvWith always creates a separate 1:1 conversation.
+func (s *Store) NewConvWith(aID, bID string) (convBrief, error) {
+	return s.convWith(aID, bID, true)
+}
+
+// ConvWith reuses the most recently created matching 1:1 conversation.
 func (s *Store) ConvWith(aID, bID string) (convBrief, error) {
+	return s.convWith(aID, bID, false)
+}
+
+var conversationTitles = []string{"需求与方案", "技术讨论", "问题排查", "实现思路", "功能规划", "测试与验证"}
+
+func (s *Store) convWith(aID, bID string, createNew bool) (convBrief, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := s.d.Users[aID]
@@ -492,13 +512,21 @@ func (s *Store) ConvWith(aID, bID string) (convBrief, error) {
 	if aID == bID {
 		return convBrief{}, ErrSelfPeer
 	}
-	for _, c := range s.d.Convs {
-		if len(c.Members) == 2 && c.Members[aID] != nil && c.Members[bID] != nil {
-			return convBrief{ID: c.ID, Title: c.Members[aID].Title, Code: c.Code}, nil
+	var latest *Conv
+	if !createNew {
+		for _, c := range s.d.Convs {
+			if len(c.Members) == 2 && c.Members[aID] != nil && c.Members[bID] != nil &&
+				(latest == nil || c.CreatedNS > latest.CreatedNS || c.CreatedNS == latest.CreatedNS && (c.CreatedAt > latest.CreatedAt || c.CreatedAt == latest.CreatedAt && c.ID > latest.ID)) {
+				latest = c
+			}
 		}
 	}
+	if latest != nil {
+		return convBrief{ID: latest.ID, Title: latest.Members[aID].Title, Code: latest.Code}, nil
+	}
+	title := conversationTitles[fastrand()%len(conversationTitles)] + " · " + randSuffix(4)
 	c := &Conv{
-		ID: newID(), Title: b.Nickname, CreatorID: aID, CreatedAt: now(),
+		ID: newID(), Title: title, CreatorID: aID, CreatedAt: now(), CreatedNS: time.Now().UnixNano(),
 		Members: map[string]*Member{}, Messages: []*Message{},
 	}
 	for {
@@ -507,12 +535,69 @@ func (s *Store) ConvWith(aID, bID string) (convBrief, error) {
 			break
 		}
 	}
-	c.Members[aID] = &Member{UserID: aID, Title: b.Nickname, JoinedAt: now()}
-	c.Members[bID] = &Member{UserID: bID, Title: a.Nickname, JoinedAt: now()}
+	c.Members[aID] = &Member{UserID: aID, Title: title, JoinedAt: now()}
+	c.Members[bID] = &Member{UserID: bID, Title: title, JoinedAt: now()}
 	s.d.Convs[c.ID] = c
 	s.d.ConvByCode[c.Code] = c.ID
 	s.saveLocked()
-	return convBrief{ID: c.ID, Title: b.Nickname, Code: c.Code}, nil
+	return convBrief{ID: c.ID, Title: title, Code: c.Code}, nil
+}
+
+func (s *Store) RenameConv(convID, userID, title string) (convOut, error) {
+	if strings.TrimSpace(title) == "" || len([]rune(strings.TrimSpace(title))) > 60 {
+		return convOut{}, errors.New("标题需为 1-60 个字符")
+	}
+	s.mu.Lock()
+	c := s.d.Convs[convID]
+	if c == nil {
+		s.mu.Unlock()
+		return convOut{}, ErrNotFound
+	}
+	m := c.Members[userID]
+	if m == nil {
+		s.mu.Unlock()
+		return convOut{}, ErrForbidden
+	}
+	m.Title = strings.TrimSpace(title)
+	s.saveLocked()
+	s.mu.Unlock()
+	return s.ConvDetail(convID, userID)
+}
+
+func (s *Store) RecordImage(id, owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.d.Images[id] = imageRecord{OwnerID: owner}
+	s.saveLocked()
+}
+
+func (s *Store) ImageOwner(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.d.Images[id].OwnerID
+}
+
+func (s *Store) CanReadImage(id, userID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner := s.d.Images[id].OwnerID
+	if owner == "" {
+		return "", false
+	}
+	if owner == userID {
+		return owner, true
+	}
+	for _, c := range s.d.Convs {
+		if c.Members[userID] == nil {
+			continue
+		}
+		for _, m := range c.Messages {
+			if m.ImageID == id {
+				return owner, true
+			}
+		}
+	}
+	return "", false
 }
 
 // ---- models (other users, shown in the composer's model picker) ----
@@ -539,6 +624,10 @@ func (s *Store) ListModels(exceptUserID string) []modelInfo {
 // ---- messages ----
 
 func (s *Store) AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error) {
+	return s.AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, "")
+}
+
+func (s *Store) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.d.Convs[convID]
@@ -548,9 +637,17 @@ func (s *Store) AddMessage(convID, senderID, nickname, content, clientMsgID stri
 	if _, member := c.Members[senderID]; !member {
 		return nil, ErrForbidden
 	}
+	if imageID != "" {
+		if s.d.Images[imageID].OwnerID != senderID {
+			return nil, ErrForbidden
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(s.path), "images", senderID, imageID+".webp")); err != nil {
+			return nil, ErrNotFound
+		}
+	}
 	m := &Message{
 		ID: newID(), SenderID: senderID, Nickname: nickname,
-		Content: content, TS: now(), ClientMsgID: clientMsgID,
+		Content: content, TS: now(), ClientMsgID: clientMsgID, ImageID: imageID,
 	}
 	c.Messages = append(c.Messages, m)
 	const maxHistory = 5000

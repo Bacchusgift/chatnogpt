@@ -318,8 +318,8 @@ func TestModelRegisterAndConvWith(t *testing.T) {
 	if bconv["id"] != id1 {
 		t.Fatal("B should land in the same conversation")
 	}
-	if bconv["title"] != user["nickname"].(string) {
-		t.Fatalf("B's title = %v, want %v", bconv["title"], user["nickname"])
+	if bconv["title"] == user["nickname"].(string) || bconv["title"] == "peer-model" {
+		t.Fatalf("title should not be a model name: %v", bconv["title"])
 	}
 
 	// detail exposes peer fields for the picker
