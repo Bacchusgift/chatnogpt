@@ -476,18 +476,17 @@ func TestCoverLinesEndpoint(t *testing.T) {
 	}
 }
 
-// cover pool 文件持久化：initCoverPool 第二次加载应命中缓存文件
-func TestCoverPoolPersist(t *testing.T) {
-	// 即使贡献者配置了自己的 GLM 密钥，单元测试也不调用外部 API。
-	t.Setenv("GLM_API_KEY", "")
-	dir := t.TempDir()
-	cs1 := initCoverPool(dir)
-	n1 := len(cs1.Lines())
-	if n1 < 10 {
-		t.Fatalf("pool too small: %d", n1)
+func TestBuiltinCoverLines(t *testing.T) {
+	st, err := LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	cs2 := initCoverPool(dir)
-	if len(cs2.Lines()) != n1 {
-		t.Fatalf("pool reload mismatch: %d vs %d", len(cs2.Lines()), n1)
+	lines := newServer(st).cover.Lines()
+	if len(lines) < 10 {
+		t.Fatalf("pool too small: %d", len(lines))
+	}
+	lines[0] = "modified"
+	if newServer(st).cover.Lines()[0] != builtinCoverLines[0] {
+		t.Fatal("cover lines must be isolated from callers")
 	}
 }

@@ -109,7 +109,7 @@ type server struct {
 }
 
 func newServer(st *Store) *server {
-	return &server{store: st, hub: newHub(), cover: &coverStore{lines: append([]string(nil), builtinCoverLines...), src: "builtin"}}
+	return &server{store: st, hub: newHub(), cover: &coverStore{lines: builtinCoverLines}}
 }
 
 func main() {
@@ -131,7 +131,6 @@ func main() {
 		log.Fatalf("load store: %v", err)
 	}
 	srv := newServer(store)
-	srv.cover = initCoverPool(*dataDir)
 
 	if *open && isLoopbackAddr(*addr) {
 		go func() {

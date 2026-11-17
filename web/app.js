@@ -122,7 +122,7 @@ function askNotifyPermission() {
 
 const EFFORTS = [
   { k: 'off', label: '关闭', desc: '显示真实对话' },
-  { k: 'max', label: '最高', desc: '深度思考伪装：对话覆盖为技术分析，悬停透视' },
+  { k: 'max', label: '最高', desc: '对方回复覆盖为技术分析，自己发送的内容保持原样' },
 ];
 
 function coverKeyHash(s) {
@@ -158,22 +158,16 @@ function clearCoverTimers() {
   document.querySelectorAll('#messages .cover-queued').forEach(row => row.classList.remove('cover-queued'));
 }
 
-// 覆盖层 DOM（按行类型复用样式）
-function makeCoverLayer(own) {
+// 只覆盖对方（AI）消息；自己发送的内容始终保持原样。
+function makeCoverLayer() {
   const layer = document.createElement('div');
-  layer.className = 'cover-layer ' + (own ? 'cover-own' : 'cover-ai');
-  if (own) {
-    const b = document.createElement('div');
-    b.className = 'cover-bubble';
-    layer.appendChild(b);
-  } else {
-    const tag = document.createElement('div');
-    tag.className = 'cover-tag';
-    tag.textContent = 'AI';
-    const b = document.createElement('div');
-    b.className = 'cover-body';
-    layer.append(tag, b);
-  }
+  layer.className = 'cover-layer cover-ai';
+  const tag = document.createElement('div');
+  tag.className = 'cover-tag';
+  tag.textContent = 'AI';
+  const body = document.createElement('div');
+  body.className = 'cover-body';
+  layer.append(tag, body);
   return layer;
 }
 
@@ -181,7 +175,7 @@ function coverTextInto(row) {
   const layer = row.querySelector('.cover-layer');
   if (!layer) return;
   const text = coverTextFor(row.dataset.msgKey || '');
-  const target = layer.querySelector('.cover-bubble') || layer.querySelector('.cover-body');
+  const target = layer.querySelector('.cover-body');
   if (target) target.textContent = text;
   const tag = layer.querySelector('.cover-tag');
   if (tag && row.dataset.nickname) tag.textContent = row.dataset.nickname;
@@ -189,13 +183,12 @@ function coverTextInto(row) {
 
 // 延迟盖层：≤5s 内随机自然延迟
 function scheduleCoverRow(row, delay) {
-  if (!row || !row.classList.contains('msg-real') ||
-      row.classList.contains('covered') || row.classList.contains('cover-queued') ||
-      row.classList.contains('awaiting-reply')) return;
+  if (!row || !row.classList.contains('msg-ai') || !row.classList.contains('msg-real') ||
+      row.classList.contains('covered') || row.classList.contains('cover-queued')) return;
   row.classList.add('cover-queued');
   const t = setTimeout(() => {
     row.classList.remove('cover-queued');
-    if (!state.coverMode || !row.isConnected || row.classList.contains('awaiting-reply')) return;
+    if (!state.coverMode || !row.isConnected) return;
     coverTextInto(row);
     row.classList.add('covered');
     bindFlashlight(row);
@@ -232,7 +225,7 @@ function uncoverAll() {
 async function coverAllVisible() {
   await ensureCoverPool();
   if (!state.coverMode) return;
-  document.querySelectorAll('#messages .msg-real:not(.covered):not(.awaiting-reply)').forEach((r, i) => {
+  document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach((r, i) => {
     scheduleCoverRow(r, Math.min(400 + i * 260, 4800));
   });
 }
@@ -245,7 +238,7 @@ function setEffort(k) {
   document.body.classList.toggle('cover-on', max);
   if (max) {
     coverAllVisible();
-    toast('思考伪装已开启：对话将覆盖为技术分析，悬停可透视');
+    toast('思考伪装已开启：对方回复将覆盖为技术分析，悬停可透视');
   } else {
     uncoverAll();
     toast('已显示真实对话');
@@ -407,8 +400,7 @@ function removeWelcome() {
 function appendOwn(content, ts, msgId) {
   removeWelcome();
   const wrap = document.createElement('div');
-  wrap.className = 'msg-own msg-real';
-  wrap.dataset.msgKey = msgKeyOf(msgId, state.me ? state.me.nickname : 'me', content);
+  wrap.className = 'msg-own';
   const realWrap = document.createElement('div');
   realWrap.className = 'real-wrap';
   const b = document.createElement('div');
@@ -420,10 +412,7 @@ function appendOwn(content, ts, msgId) {
   }
   realWrap.appendChild(b);
   wrap.appendChild(realWrap);
-  wrap.appendChild(makeCoverLayer(true));
-  coverTextInto(wrap);
   $('#messages').appendChild(wrap);
-  return wrap;
 }
 
 function appendAIRow(nickname) {
@@ -452,7 +441,7 @@ function appendAIStatic(nickname, content, ts, msgId) {
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = msgKeyOf(msgId, nickname, content);
   r.row.dataset.nickname = nickname;
-  r.row.appendChild(makeCoverLayer(false));
+  r.row.appendChild(makeCoverLayer());
   coverTextInto(r.row);
 }
 
@@ -654,7 +643,7 @@ function animateAI(item) {
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = item.msgKey || msgKeyOf('', item.nickname, item.content);
   r.row.dataset.nickname = item.nickname;
-  r.row.appendChild(makeCoverLayer(false));
+  r.row.appendChild(makeCoverLayer());
   coverTextInto(r.row);
   const cursor = document.createElement('span');
   cursor.className = 'cursor';
@@ -676,17 +665,10 @@ function animateAI(item) {
       cursor.remove();
       state.animating = false;
       pumpQueue();
-      // 自己刚发出的消息至少保留到对方回复读完，再延迟覆盖。
-      if (item.isPeer) {
-        document.querySelectorAll('#messages .msg-own.awaiting-reply').forEach((row, i) => {
-          row.classList.remove('awaiting-reply');
-          if (state.coverMode) scheduleCoverRow(row, 5000 + i * 260);
-        });
-      }
       if (state.coverMode) {
         scheduleCoverRow(r.row, 1500 + Math.floor(Math.random() * 2500));
         if (item.isPeer) {
-          document.querySelectorAll('#messages .msg-real:not(.covered):not(.awaiting-reply)').forEach((row, i) => {
+          document.querySelectorAll('#messages .msg-ai.msg-real:not(.covered)').forEach((row, i) => {
             scheduleCoverRow(row, 1800 + i * 260 + Math.floor(Math.random() * 600));
           });
         }
@@ -829,8 +811,7 @@ function doSend(text) {
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  const row = appendOwn(text, Math.floor(Date.now() / 1000));
-  row.classList.add('awaiting-reply');
+  appendOwn(text, Math.floor(Date.now() / 1000));
   scrollFollow();
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: text, client_msg_id: cmid }));

@@ -103,6 +103,7 @@ input, textarea { font: inherit; color: inherit; }
 .welcome h1 { font-size: 30px; font-weight: 650; letter-spacing: -.5px; color: #ececec; }
 .welcome p { color: #9b9b9b; margin-top: 10px; font-size: 14px; }
 .msg-own { margin: 0 0 14px; }
+.msg-own > .real-wrap { display: flex; justify-content: flex-end; }
 .msg-own .bubble {
   background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;
   white-space: pre-wrap; word-break: break-word; line-height: 1.65; font-size: 15.5px;
@@ -116,10 +117,8 @@ input, textarea { font: inherit; color: inherit; }
 /* 两层同格排版，行高取最长的一层；关闭伪装时覆盖层不参与布局。 */
 .msg-real { display: grid; align-items: start; position: relative; --hole: 140px; }
 .msg-real > .real-wrap, .msg-real > .cover-layer { grid-area: 1 / 1; min-width: 0; }
-.msg-own > .real-wrap { display: flex; justify-content: flex-end; }
 .cover-layer { display: none; pointer-events: none; }
 body.cover-on .msg-real.covered > .cover-layer { display: block; }
-body.cover-on .msg-real.covered > .cover-own { display: flex; }
 
 /* 无交互时只显示伪装；悬停/触屏时两层使用互补的硬边遮罩。
    不改变真实内容的排版和透明度，圆孔内只有原文，孔外只有伪装。 */
@@ -132,19 +131,6 @@ body.cover-on .msg-real.covered:is(:hover, .flash) > .real-wrap {
 body.cover-on .msg-real.covered:is(:hover, .flash) > .cover-layer {
   -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
   mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
-}
-
-/* 自己的原文可能只有一行，伪装却有数行：把原文气泡放在圆孔中央，
-   避免光圈停在长气泡下半部时只看到空白。关闭伪装后仍恢复原始位置。 */
-body.cover-on .msg-own.covered:is(:hover, .flash) > .real-wrap {
-  position: absolute; left: var(--fx); top: var(--fy);
-  width: min(260px, 100%); transform: translate(-50%, -50%);
-  z-index: 1; pointer-events: none; overflow: hidden;
-  -webkit-mask-image: radial-gradient(circle var(--hole) at center, #000 calc(var(--hole) - 1px), transparent var(--hole));
-  mask-image: radial-gradient(circle var(--hole) at center, #000 calc(var(--hole) - 1px), transparent var(--hole));
-}
-body.cover-on .msg-own.covered:is(:hover, .flash) > .real-wrap .bubble {
-  width: 100%; max-width: none; max-height: 260px; overflow: hidden;
 }
 
 /* 光晕 + 镜筒光环：挂在行容器上（行无 overflow 裁切），跟随光标，呼吸脉冲 */
@@ -185,13 +171,6 @@ body.cover-on .msg-real.covered.flash::after {
   white-space: pre-wrap; word-break: break-word; color: #ececec;
   font-size: 15.5px; line-height: 1.75;
 }
-.cover-own { display: flex; justify-content: flex-end; align-items: flex-start; padding-top: 1px; }
-.cover-own .cover-bubble {
-  background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;
-  color: #ececec; font-size: 15.5px; line-height: 1.65;
-  white-space: pre-wrap; word-break: break-word;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .msg-real::before, .msg-real::after { animation: none !important; transition: none !important; }
 }
