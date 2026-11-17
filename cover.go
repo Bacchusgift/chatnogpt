@@ -30,8 +30,9 @@ import (
 const (
 	glmDefaultModel   = "glm-4-flash"
 	glmDefaultURL     = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-	coverPoolTarget   = 60 // 向 GLM 请求的目标条数
-	coverPoolMinValid = 10 // 少于这个数视为生成失败，回退内置
+	glmClientTimeout  = 180 * time.Second // glm-4.6 等思考型模型生成长列表可能超过一分钟
+	coverPoolTarget   = 40                // 向 GLM 请求的目标条数
+	coverPoolMinValid = 10                // 少于这个数视为生成失败，回退内置
 )
 
 // builtinCoverLines —— 内置技术性话语（GLM 不可用时的兜底语料）。
@@ -95,28 +96,28 @@ type coverStore struct {
 	src   string
 }
 
-// initCoverPool 加载/生成语料池。任何失败都回退内置语料，绝不阻塞启动主流程。
+// initCoverPool 加载/生成语料池。失败回退内置语料；GLM 生成异步进行，
+// 服务先用内置语料立即上线，成功后热替换。
 func initCoverPool(dataDir string) *coverStore {
 	cs := &coverStore{path: filepath.Join(dataDir, "cover_pool.json")}
 	if loadCoverPoolFile(cs) {
 		return cs
 	}
-	key := strings.TrimSpace(os.Getenv("GLM_API_KEY"))
-	if key != "" {
-		log.Printf("cover pool: generating via GLM (%s)...", glmModel())
-		ctxLines, err := generateCoverViaGLM(key)
-		if err != nil {
-			log.Printf("cover pool: GLM generation failed, fallback to builtin: %v", err)
-		} else {
-			cs.lines = ctxLines
-			cs.src = "glm"
-			saveCoverPoolFile(cs)
-			return cs
-		}
-	}
 	cs.lines = append([]string(nil), builtinCoverLines...)
 	cs.src = "builtin"
 	saveCoverPoolFile(cs)
+	if key := strings.TrimSpace(os.Getenv("GLM_API_KEY")); key != "" {
+		log.Printf("cover pool: generating via GLM (%s) in background...", glmModel())
+		go func() {
+			lines, err := generateCoverViaGLM(key)
+			if err != nil {
+				log.Printf("cover pool: GLM generation failed, keep builtin: %v", err)
+				return
+			}
+			cs.setLines(lines, "glm")
+			saveCoverPoolFile(cs)
+		}()
+	}
 	return cs
 }
 
@@ -175,6 +176,15 @@ func (c *coverStore) Lines() []string {
 	return append([]string(nil), c.lines...)
 }
 
+// setLines 热替换语料池（GLM 异步生成完成后调用）。
+func (c *coverStore) setLines(lines []string, src string) {
+	c.mu.Lock()
+	c.lines = lines
+	c.src = src
+	c.mu.Unlock()
+	log.Printf("cover pool: switched to %d GLM line(s)", len(lines))
+}
+
 // generateCoverViaGLM 调 GLM chat/completions 批量生成技术性话语，返回净化后的列表。
 func generateCoverViaGLM(key string) ([]string, error) {
 	prompt := fmt.Sprintf(
@@ -192,6 +202,8 @@ func generateCoverViaGLM(key string) ([]string, error) {
 		},
 		"temperature": 1.0,
 		"max_tokens":  4096,
+		// 列表生成不需要推理链，关闭思考可把耗时从分钟级压到秒级
+		"thinking": map[string]string{"type": "disabled"},
 	})
 	req, err := http.NewRequest(http.MethodPost, glmURL(), strings.NewReader(string(reqBody)))
 	if err != nil {
@@ -200,7 +212,7 @@ func generateCoverViaGLM(key string) ([]string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: glmClientTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
