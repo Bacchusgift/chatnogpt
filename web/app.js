@@ -25,6 +25,7 @@ const state = {
   lastTS: 0,          // 当前聊天已收到的最大时间戳（断线补拉用）
   lastRenderTS: 0,    // 当前聊天已渲染的最大时间戳（时间分割线用）
   unread: 0,          // 页签隐藏期间累计的新消息数（标题计数）
+  unreadConvs: new Set(), // 有未读消息的会话 id（侧栏绿点，按账号存本地）
   baseTitle: '',      // 页面原始标题
   queue: [],          // 等待播放的消息
   animating: false,
@@ -96,15 +97,53 @@ function resetUnread() {
   }
 }
 
-// 页签隐藏时：系统通知 + 标题计数；页签可见时什么都不做（消息本来就在眼前）
-function notifyMessage(convID, title, body) {
+function unreadStorageKey() {
+  return `cngp_unread_${state.me.id}`;
+}
+
+function loadUnreadConvs() {
+  try {
+    const ids = JSON.parse(localStorage.getItem(unreadStorageKey()) || '[]');
+    return new Set(Array.isArray(ids) ? ids.filter(x => typeof x === 'string') : []);
+  } catch { return new Set(); }
+}
+
+function saveUnreadConvs() {
+  try { localStorage.setItem(unreadStorageKey(), JSON.stringify(Array.from(state.unreadConvs))); } catch {}
+}
+
+function convDotEl() {
+  const i = document.createElement('i');
+  i.className = 'conv-dot';
+  return i;
+}
+
+// 侧栏绿点：收到消息且还没打开该会话时点亮，打开后清除；按账号持久化。
+function markUnread(id) {
+  if (!id || !state.me || state.unreadConvs.has(id)) return;
+  state.unreadConvs.add(id);
+  saveUnreadConvs();
+  const b = document.querySelector(`#convList .conv-item[data-id="${CSS.escape(id)}"]`);
+  if (b && !b.querySelector('.conv-dot')) b.appendChild(convDotEl());
+}
+
+function clearUnread(id) {
+  if (!id || !state.unreadConvs.delete(id)) return;
+  saveUnreadConvs();
+  document.querySelector(`#convList .conv-item[data-id="${CSS.escape(id)}"] .conv-dot`)?.remove();
+}
+
+// 新消息提醒：标题计数 + 浏览器系统通知；onScreen 表示消息正显示在当前会话里，
+// 页签可见时不重复弹窗（内容已在眼前），页签隐藏时照常提醒。
+function notifyMessage(convID, title, body, onScreen = false) {
   bumpUnread();
   try {
-    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    if ((!onScreen || document.hidden) && 'Notification' in window && Notification.permission === 'granted') {
       const n = new Notification(title, { body: body.slice(0, 120), tag: 'cngp-' + convID });
       n.onclick = () => {
         window.focus();
         resetUnread();
+        clearUnread(convID);
         if (convID !== state.cur) selectConv(convID);
         n.close();
       };
@@ -325,6 +364,7 @@ function showApp() {
   // 恢复上次选择的思考强度
   $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
+  state.unreadConvs = loadUnreadConvs();
   if (!state.cur) {
     $('#messages').replaceChildren();
     appendWelcome('ChatNoGPT');
@@ -344,6 +384,7 @@ function doLogoutLocal() {
   state.queue = [];
   state.animating = false;
   state.readIDs = new Set();
+  state.unreadConvs = new Set();
   state.seenMsg.clear();
   state.pending.clear();
   state.wsConv = null;
@@ -373,6 +414,7 @@ async function loadConvs(silent = false) {
     if (prevTS.size) {
       for (const c of state.convs) {
         if (c.id !== state.cur && (c.last_ts || 0) > (prevTS.get(c.id) || 0)) {
+          markUnread(c.id);
           notifyMessage(c.id, c.title, '收到新消息');
         }
       }
@@ -396,7 +438,9 @@ function renderConvList() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
+    b.dataset.id = c.id;
     b.textContent = c.title;
+    if (state.unreadConvs.has(c.id)) b.appendChild(convDotEl());
     b.title = c.title + '（双击修改标题）';
     b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
     b.ondblclick = () => renameConv(c.id, c.title);
@@ -486,6 +530,7 @@ async function selectConv(id) {
   state.gen++;
   const gen = state.gen;
   state.readIDs = loadReadIDs(id);
+  clearUnread(id);
   state.queue = [];
   state.animating = false;
   state.pending.clear();
@@ -742,6 +787,11 @@ async function syncMissed(id) {
         enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true, m.image_id);
       }
       scrollFollow();
+      if (m.sender_id !== state.me.id && document.hidden) {
+        // 断线重连补拉的消息也要提醒：绿点 + 系统通知 + 标题计数
+        markUnread(state.cur);
+        notifyMessage(state.cur, m.nickname, state.coverMode ? '收到新回复，点击查看' : m.content, true);
+      }
     }
   } catch {}
 }
@@ -779,8 +829,9 @@ function handleEvent(ev) {
       }
       hideTyping();
       enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true, ev.image_id);
-      // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）
-      notifyMessage(state.cur, ev.nickname, state.coverMode ? '收到新回复，点击查看' : ev.content);
+      // 页签在后台时：绿点 + 系统通知 + 标题计数；可见时消息已在眼前，不重复提醒
+      if (document.hidden) markUnread(state.cur);
+      notifyMessage(state.cur, ev.nickname, state.coverMode ? '收到新回复，点击查看' : ev.content, true);
     }
   } else if (ev.type === 'typing') {
     if (ev.sender_id !== state.me.id) showTyping(ev.nickname);
@@ -1323,8 +1374,17 @@ function bind() {
 async function init() {
   bind();
   state.baseTitle = document.title;
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) resetUnread(); });
-  window.addEventListener('focus', resetUnread);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      resetUnread();
+      // 回到页签时正在看的会话即已读，绿点随之消失
+      if (state.cur) clearUnread(state.cur);
+    }
+  });
+  window.addEventListener('focus', () => {
+    resetUnread();
+    if (state.cur) clearUnread(state.cur);
+  });
   // 轮询聊天列表：别人发来的新聊天会自动出现在侧栏。
   // 页签隐藏时降为每 15s 一次，保证后台仍能触发新消息通知
   let pollTicks = 0;

@@ -68,6 +68,11 @@ input, textarea { font: inherit; color: inherit; }
 }
 .conv-item:hover { background: #262626; }
 .conv-item.active { background: #323232; }
+.conv-item { position: relative; padding-right: 30px; }
+.conv-dot {
+  position: absolute; right: 11px; top: 50%; width: 8px; height: 8px; margin-top: -4px;
+  border-radius: 50%; background: #3ddc97; box-shadow: 0 0 8px rgba(61,220,151,.55);
+}
 .conv-empty { color: #8e8e8e; font-size: 13px; padding: 8px 10px; }
 .side-foot { border-top: 1px solid #2a2a2a; padding-top: 10px; }
 .user-chip { display: flex; align-items: center; gap: 10px; padding: 6px 8px; }
