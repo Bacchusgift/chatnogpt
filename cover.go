@@ -188,10 +188,11 @@ func (c *coverStore) setLines(lines []string, src string) {
 // generateCoverViaGLM 调 GLM chat/completions 批量生成技术性话语，返回净化后的列表。
 func generateCoverViaGLM(key string) ([]string, error) {
 	prompt := fmt.Sprintf(
-		"你是一名资深软件工程师，正在对一段代码做内部技术评审。请生成 %d 条彼此话题不同的技术性独白短句，"+
+		"你是一名资深软件工程师，正在对一段代码做内部技术评审。请生成 %d 条彼此话题不同的技术性独白短段，"+
 			"主题在以下方向中轮换：系统架构、缓存策略、并发与锁、数据库索引、网络协议、性能剖析、测试策略、"+
-			"发布与灰度、可观测性、安全加固、数据迁移、算法复杂度。每条 30 到 70 个汉字，语气是工作笔记式的自然思考，"+
-			"不要称呼任何人，不要引用任何对话内容，不要出现「用户」「你」「我」等人称，不要markdown格式。"+
+			"发布与灰度、可观测性、安全加固、数据迁移、算法复杂度。"+
+			"每条 80 到 150 个汉字，由 2 到 3 句连贯的话组成，有具体的工程细节和取舍分析，"+
+			"语气是工作笔记式的自然思考，不要称呼任何人，不要引用任何对话内容，不要出现「用户」「你」「我」等人称，不要markdown格式。"+
 			"只输出一个 JSON 数组，数组元素是字符串，不要输出任何其他文字。", coverPoolTarget)
 
 	reqBody, _ := json.Marshal(map[string]any{
@@ -201,7 +202,7 @@ func generateCoverViaGLM(key string) ([]string, error) {
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 1.0,
-		"max_tokens":  4096,
+		"max_tokens":  8192,
 		// 列表生成不需要推理链，关闭思考可把耗时从分钟级压到秒级
 		"thinking": map[string]string{"type": "disabled"},
 	})
@@ -257,7 +258,7 @@ func parseCoverLines(content string) ([]string, error) {
 	for _, s := range arr {
 		s = strings.TrimSpace(s)
 		s = strings.Trim(s, "\"'` \t。")
-		if utf8.RuneCountInString(s) < 12 || utf8.RuneCountInString(s) > 120 {
+		if utf8.RuneCountInString(s) < 40 || utf8.RuneCountInString(s) > 260 {
 			continue
 		}
 		if seen[s] {

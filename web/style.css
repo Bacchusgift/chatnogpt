@@ -102,7 +102,7 @@ input, textarea { font: inherit; color: inherit; }
 .welcome { text-align: center; padding-top: 18vh; }
 .welcome h1 { font-size: 30px; font-weight: 650; letter-spacing: -.5px; color: #ececec; }
 .welcome p { color: #9b9b9b; margin-top: 10px; font-size: 14px; }
-.msg-own { display: flex; justify-content: flex-end; margin: 0 0 14px; }
+.msg-own { margin: 0 0 14px; }
 .msg-own .bubble {
   background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;
   white-space: pre-wrap; word-break: break-word; line-height: 1.65; font-size: 15.5px;
@@ -111,41 +111,27 @@ input, textarea { font: inherit; color: inherit; }
 .ai-label { font-size: 12.5px; font-weight: 600; color: #8e8e8e; margin-bottom: 3px; }
 .ai-body { white-space: pre-wrap; word-break: break-word; line-height: 1.75; font-size: 15.5px; }
 
-/* ---------- 思考伪装：覆盖层 + 手电筒透视 ---------- */
+/* ---------- 思考伪装：覆盖层 + 圆形遮罩透视 ---------- */
 
-.msg-real { position: relative; }
+/* 行容器：真实内容与覆盖层同一网格单元叠放，行高取二者较大值（覆盖长文本不裁切） */
+.msg-real { display: grid; align-items: start; position: relative; }
+.msg-real > .real-wrap, .msg-real > .cover-layer { grid-area: 1 / 1; min-width: 0; }
+.msg-own > .real-wrap { display: flex; justify-content: flex-end; }
 
 /* 真实内容：盖层时纯透明隐藏（不留模糊，保证孔内透视清晰），悬停瞬间还原 */
-.msg-real .bubble, .msg-real .ai-label, .msg-real .ai-body, .msg-real .thought-line {
-  transition: opacity .9s ease;
-}
-body.cover-on .msg-real.covered .bubble,
-body.cover-on .msg-real.covered .ai-label,
-body.cover-on .msg-real.covered .ai-body,
-body.cover-on .msg-real.covered .thought-line {
-  opacity: 0;
-}
-body.cover-on .msg-real.covered:hover .bubble,
-body.cover-on .msg-real.covered:hover .ai-label,
-body.cover-on .msg-real.covered:hover .ai-body,
-body.cover-on .msg-real.covered:hover .thought-line,
-body.cover-on .msg-real.covered.flash .bubble,
-body.cover-on .msg-real.covered.flash .ai-label,
-body.cover-on .msg-real.covered.flash .ai-body,
-body.cover-on .msg-real.covered.flash .thought-line {
-  opacity: 1; transition-duration: .08s;
-}
+.msg-real > .real-wrap { transition: opacity .9s ease; }
+body.cover-on .msg-real.covered > .real-wrap { opacity: 0; }
+body.cover-on .msg-real.covered:hover > .real-wrap,
+body.cover-on .msg-real.covered.flash > .real-wrap { opacity: 1; transition-duration: .08s; }
 
-/* 覆盖层：盖层时淡入，默认挡住真实内容；不遮时不可交互 */
+/* 覆盖层：流内元素，max-height 从 0 展开（不盖时不占行高），展开/收起带过渡 */
 .cover-layer {
-  position: absolute; inset: -6px -10px; z-index: 2;
-  opacity: 0; pointer-events: none;
-  transition: opacity .9s ease;
-  overflow: hidden;
+  position: relative; z-index: 2;
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height .55s ease, opacity .7s ease;
+  pointer-events: none;
 }
-body.cover-on .msg-real.covered .cover-layer { opacity: 1; pointer-events: auto; }
-body.cover-on .msg-real.covered:hover .cover-layer,
-body.cover-on .msg-real.covered.flash .cover-layer { transition-duration: .4s; }
+body.cover-on .msg-real.covered > .cover-layer { max-height: 640px; opacity: 1; pointer-events: auto; }
 
 /* 手电筒：悬停/触屏按下时出现圆形遮罩孔，孔内直接清晰看到真实内容。
    边缘仅留 12px 羽化抗锯齿，避免双层文字叠影 */
@@ -158,51 +144,53 @@ body.cover-on .msg-real.covered.flash .cover-layer {
     transparent 0 calc(var(--hole) - 12px), #000 var(--hole));
 }
 
-/* 光晕：跟随光标的柔光 */
-.cover-layer::before {
-  content: ''; position: absolute; left: var(--fx); top: var(--fy);
-  width: calc(var(--hole) * 2.6); height: calc(var(--hole) * 2.6);
+/* 光晕 + 镜筒光环：挂在行容器上（行无 overflow 裁切），跟随光标，呼吸脉冲 */
+body.cover-on .msg-real.covered::before {
+  content: ''; position: absolute; left: var(--fx, 50%); top: var(--fy, 50%); z-index: 3;
+  width: calc(var(--hole, 140px) * 2.6); height: calc(var(--hole, 140px) * 2.6);
   transform: translate(-50%, -50%);
   background: radial-gradient(circle,
-    rgba(140, 235, 190, .14) 0%, rgba(140, 235, 190, .06) 40%, transparent 66%);
+    rgba(140, 235, 190, .13) 0%, rgba(140, 235, 190, .05) 42%, transparent 66%);
   opacity: 0; transition: opacity .3s ease; pointer-events: none;
 }
-body.cover-on .msg-real.covered:hover .cover-layer::before,
-body.cover-on .msg-real.covered.flash .cover-layer::before { opacity: 1; }
-
-/* 镜筒光环：套在圆孔边缘，呼吸脉冲 */
-.cover-layer::after {
-  content: ''; position: absolute; left: var(--fx); top: var(--fy);
-  width: calc(var(--hole) * 2); height: calc(var(--hole) * 2);
+body.cover-on .msg-real.covered::after {
+  content: ''; position: absolute; left: var(--fx, 50%); top: var(--fy, 50%); z-index: 3;
+  width: calc(var(--hole, 140px) * 2); height: calc(var(--hole, 140px) * 2);
   transform: translate(-50%, -50%); border-radius: 50%;
   border: 1.5px solid rgba(140, 235, 190, .38);
-  box-shadow: 0 0 26px rgba(140, 235, 190, .22), inset 0 0 34px rgba(140, 235, 190, .10);
+  box-shadow: 0 0 26px rgba(140, 235, 190, .20), inset 0 0 34px rgba(140, 235, 190, .10);
   opacity: 0; transition: opacity .25s ease; pointer-events: none;
 }
-body.cover-on .msg-real.covered:hover .cover-layer::after,
-body.cover-on .msg-real.covered.flash .cover-layer::after {
-  opacity: 1; animation: torchPulse 2.4s ease-in-out infinite;
+body.cover-on .msg-real.covered:hover::before,
+body.cover-on .msg-real.covered:hover::after,
+body.cover-on .msg-real.covered.flash::before,
+body.cover-on .msg-real.covered.flash::after {
+  opacity: 1;
+}
+body.cover-on .msg-real.covered:hover::after,
+body.cover-on .msg-real.covered.flash::after {
+  animation: torchPulse 2.4s ease-in-out infinite;
 }
 @keyframes torchPulse {
   0%, 100% { transform: translate(-50%, -50%) scale(1); }
   50%      { transform: translate(-50%, -50%) scale(1.045); }
 }
 
-/* 覆盖文本样式：AI 感的青绿色技术独白 */
-.cover-ai .cover-tag { font-size: 12.5px; font-weight: 600; color: #6fbf9d; margin: 6px 0 3px; }
+/* 覆盖内容配色与真实界面一致（AI 白灰文字 / 自己的灰底白字气泡），伪装观感自然 */
+.cover-ai .cover-tag { font-size: 12.5px; font-weight: 600; color: #8e8e8e; margin: 4px 0 3px; }
 .cover-ai .cover-body {
-  white-space: pre-wrap; word-break: break-word; color: #93c9ae;
-  font-size: 15px; line-height: 1.7; letter-spacing: .2px;
+  white-space: pre-wrap; word-break: break-word; color: #ececec;
+  font-size: 15.5px; line-height: 1.75;
 }
-.cover-own { display: flex; justify-content: flex-end; align-items: flex-start; }
+.cover-own { display: flex; justify-content: flex-end; align-items: flex-start; padding-top: 1px; }
 .cover-own .cover-bubble {
-  background: #1f2d28; border: 1px solid rgba(140, 235, 190, .12);
-  color: #a4d6bd; border-radius: 22px; padding: 10px 18px; max-width: 72%;
-  font-size: 15.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+  background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;
+  color: #ececec; font-size: 15.5px; line-height: 1.65;
+  white-space: pre-wrap; word-break: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cover-layer, .msg-real .bubble, .msg-real .ai-label, .msg-real .ai-body, .msg-real .thought-line { transition: none; }
+  .cover-layer, .msg-real > .real-wrap { transition: none; }
 }
 .cursor {
   display: inline-block; width: 9px; height: 17px; margin-left: 2px; vertical-align: -3px;

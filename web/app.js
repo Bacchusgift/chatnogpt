@@ -182,6 +182,8 @@ function coverTextInto(row) {
   const text = coverTextFor(row.dataset.msgKey || '');
   const target = layer.querySelector('.cover-bubble') || layer.querySelector('.cover-body');
   if (target) target.textContent = text;
+  const tag = layer.querySelector('.cover-tag');
+  if (tag && row.dataset.nickname) tag.textContent = row.dataset.nickname;
 }
 
 // 延迟盖层：≤5s 内随机自然延迟
@@ -399,6 +401,8 @@ function appendOwn(content, ts, msgId) {
   const wrap = document.createElement('div');
   wrap.className = 'msg-own msg-real';
   wrap.dataset.msgKey = msgKeyOf(msgId, state.me ? state.me.nickname : 'me', content);
+  const realWrap = document.createElement('div');
+  realWrap.className = 'real-wrap';
   const b = document.createElement('div');
   b.className = 'bubble';
   b.textContent = content;
@@ -406,7 +410,8 @@ function appendOwn(content, ts, msgId) {
     ensureDivider(ts);
     b.title = fullStamp(ts);
   }
-  wrap.appendChild(b);
+  realWrap.appendChild(b);
+  wrap.appendChild(realWrap);
   wrap.appendChild(makeCoverLayer(true));
   coverTextInto(wrap);
   $('#messages').appendChild(wrap);
@@ -416,12 +421,15 @@ function appendAIRow(nickname) {
   removeWelcome();
   const row = document.createElement('div');
   row.className = 'msg-ai';
+  const realWrap = document.createElement('div');
+  realWrap.className = 'real-wrap';
   const label = document.createElement('div');
   label.className = 'ai-label';
   label.textContent = nickname;
-  row.appendChild(label);
+  realWrap.appendChild(label);
+  row.appendChild(realWrap);
   $('#messages').appendChild(row);
-  return { row, label };
+  return { row, label, realWrap };
 }
 
 function appendAIStatic(nickname, content, ts, msgId) {
@@ -431,9 +439,10 @@ function appendAIStatic(nickname, content, ts, msgId) {
   body.className = 'ai-body';
   body.textContent = content;
   if (ts) body.title = fullStamp(ts);
-  r.row.appendChild(body);
+  r.realWrap.appendChild(body);
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = msgKeyOf(msgId, nickname, content);
+  r.row.dataset.nickname = nickname;
   r.row.appendChild(makeCoverLayer(false));
   coverTextInto(r.row);
 }
@@ -626,15 +635,16 @@ function animateAI(item) {
     th.textContent = `已思考 ${item.thinkSec} 秒`;
     body = document.createElement('div');
     body.className = 'ai-body';
-    r.row.append(th, body);
+    r.realWrap.append(th, body);
   } else {
     body = document.createElement('div');
     body.className = 'ai-body';
-    r.row.appendChild(body);
+    r.realWrap.appendChild(body);
   }
   if (item.ts) body.title = fullStamp(item.ts);
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = item.msgKey || msgKeyOf('', item.nickname, item.content);
+  r.row.dataset.nickname = item.nickname;
   r.row.appendChild(makeCoverLayer(false));
   coverTextInto(r.row);
   const cursor = document.createElement('span');
