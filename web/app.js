@@ -592,6 +592,20 @@ function removeWelcome() {
   if (w) w.remove();
 }
 
+async function loadImageURL(id, token) {
+  const cached = state.imageURLs.get(id);
+  if (cached) return cached;
+  const res = await fetch('/api/images/' + encodeURIComponent(id), {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+  if (!res.ok) throw new Error('无法读取图片');
+  const blob = await res.blob();
+  if (state.token !== token) throw new Error('无法读取图片'); // 登出后不把旧账号图片放回缓存
+  const url = URL.createObjectURL(blob);
+  state.imageURLs.set(id, url);
+  return url;
+}
+
 function alignImageMatte(img) {
   const row = img.closest('.msg-ai.msg-real.has-image');
   const layer = row?.querySelector('.cover-layer');
@@ -617,30 +631,27 @@ async function appendImage(parent, id) {
   const img = document.createElement('img');
   img.className = 'chat-image';
   img.alt = '聊天图片';
-  img.loading = 'lazy';
+  img.decoding = 'async';
   img.addEventListener('load', () => requestAnimationFrame(() => alignImageMatte(img)));
   parent.appendChild(img);
   const token = state.token;
   try {
-    if (!state.imageURLs.has(id)) {
-      const res = await fetch('/api/images/' + encodeURIComponent(id), {
-        headers: { Authorization: 'Bearer ' + token },
-      });
-      if (!res.ok) throw new Error('无法读取图片');
-      const blob = await res.blob();
-      if (state.token !== token) return; // 登出后不把旧账号图片放回缓存
-      state.imageURLs.set(id, URL.createObjectURL(blob));
-    }
-    // 同一图片已在缓存时无需等待网络；此时行可能尚未插入 DOM。
-    img.src = state.imageURLs.get(id);
-    const peerCovered = () => state.coverMode && !!img.closest('.msg-ai');
-    img.onclick = () => {
-      // 密文模式的对方图片只能通过原位圆孔查看，不能弹出无遮罩原图。
-      if (!peerCovered()) window.open(img.src, '_blank', 'noopener,noreferrer');
-    };
-    img.oncontextmenu = e => { if (peerCovered()) e.preventDefault(); };
-    img.ondragstart = e => { if (peerCovered()) e.preventDefault(); };
-  } catch { img.alt = '图片加载失败'; }
+    img.src = await loadImageURL(id, token);
+  } catch { img.alt = '图片加载失败'; return; }
+  const peerCovered = () => state.coverMode && !!img.closest('.msg-ai');
+  img.onclick = () => {
+    // 密文模式的对方图片只能通过原位圆孔查看，不能弹出无遮罩原图。
+    if (!peerCovered()) window.open(img.src, '_blank', 'noopener,noreferrer');
+  };
+  img.oncontextmenu = e => { if (peerCovered()) e.preventDefault(); };
+  img.ondragstart = e => { if (peerCovered()) e.preventDefault(); };
+  // 偶发裂图兑底：缓存的 blob URL 失效时，丢弃缓存重新拉取一次。
+  img.onerror = () => {
+    if (img.dataset.retried) return;
+    img.dataset.retried = '1';
+    state.imageURLs.delete(id);
+    loadImageURL(id, token).then(url => { img.src = url; }).catch(() => { img.alt = '图片加载失败'; });
+  };
 }
 
 function appendOwn(content, ts, msgId, imageID) {
