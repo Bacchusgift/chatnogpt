@@ -168,7 +168,7 @@ function makeCoverLayer(own) {
   } else {
     const tag = document.createElement('div');
     tag.className = 'cover-tag';
-    tag.textContent = '深度分析';
+    tag.textContent = 'AI';
     const b = document.createElement('div');
     b.className = 'cover-body';
     layer.append(tag, b);
@@ -210,10 +210,11 @@ function bindFlashlight(row) {
   row.addEventListener('pointerenter', track);
   row.addEventListener('pointermove', track);
   row.addEventListener('pointerdown', e => {
-    if (!row.classList.contains('covered')) return;
+    if (!row.classList.contains('covered') || e.pointerType === 'mouse') return;
     track(e);
     row.classList.add('flash');
-    setTimeout(() => row.classList.remove('flash'), 1600);
+    clearTimeout(row.flashTimer);
+    row.flashTimer = setTimeout(() => row.classList.remove('flash'), 1600);
   });
 }
 

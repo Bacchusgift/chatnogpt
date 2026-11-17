@@ -113,35 +113,25 @@ input, textarea { font: inherit; color: inherit; }
 
 /* ---------- 思考伪装：覆盖层 + 圆形遮罩透视 ---------- */
 
-/* 行容器：真实内容与覆盖层同一网格单元叠放，行高取二者较大值（覆盖长文本不裁切） */
-.msg-real { display: grid; align-items: start; position: relative; }
+/* 两层同格排版，行高取最长的一层；关闭伪装时覆盖层不参与布局。 */
+.msg-real { display: grid; align-items: start; position: relative; --hole: 140px; }
 .msg-real > .real-wrap, .msg-real > .cover-layer { grid-area: 1 / 1; min-width: 0; }
 .msg-own > .real-wrap { display: flex; justify-content: flex-end; }
+.cover-layer { display: none; pointer-events: none; }
+body.cover-on .msg-real.covered > .cover-layer { display: block; }
+body.cover-on .msg-real.covered > .cover-own { display: flex; }
 
-/* 真实内容：盖层时纯透明隐藏（不留模糊，保证孔内透视清晰），悬停瞬间还原 */
-.msg-real > .real-wrap { transition: opacity .9s ease; }
-body.cover-on .msg-real.covered > .real-wrap { opacity: 0; }
-body.cover-on .msg-real.covered:hover > .real-wrap,
-body.cover-on .msg-real.covered.flash > .real-wrap { opacity: 1; transition-duration: .08s; }
-
-/* 覆盖层：流内元素，max-height 从 0 展开（不盖时不占行高），展开/收起带过渡 */
-.cover-layer {
-  position: relative; z-index: 2;
-  max-height: 0; opacity: 0; overflow: hidden;
-  transition: max-height .55s ease, opacity .7s ease;
-  pointer-events: none;
+/* 无交互时只显示伪装；悬停/触屏时两层使用互补的硬边遮罩。
+   不改变真实内容的排版和透明度，圆孔内只有原文，孔外只有伪装。 */
+body.cover-on .msg-real.covered > .real-wrap { visibility: hidden; }
+body.cover-on .msg-real.covered:is(:hover, .flash) > .real-wrap {
+  visibility: visible;
+  -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), #000 calc(var(--hole) - 1px), transparent var(--hole));
+  mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), #000 calc(var(--hole) - 1px), transparent var(--hole));
 }
-body.cover-on .msg-real.covered > .cover-layer { max-height: 640px; opacity: 1; pointer-events: auto; }
-
-/* 手电筒：悬停/触屏按下时出现圆形遮罩孔，孔内直接清晰看到真实内容。
-   边缘仅留 12px 羽化抗锯齿，避免双层文字叠影 */
-.cover-layer { --fx: 50%; --fy: 50%; --hole: 140px; }
-body.cover-on .msg-real.covered:hover .cover-layer,
-body.cover-on .msg-real.covered.flash .cover-layer {
-  -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy),
-    transparent 0 calc(var(--hole) - 12px), #000 var(--hole));
-  mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy),
-    transparent 0 calc(var(--hole) - 12px), #000 var(--hole));
+body.cover-on .msg-real.covered:is(:hover, .flash) > .cover-layer {
+  -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
+  mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
 }
 
 /* 光晕 + 镜筒光环：挂在行容器上（行无 overflow 裁切），跟随光标，呼吸脉冲 */
@@ -190,7 +180,7 @@ body.cover-on .msg-real.covered.flash::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cover-layer, .msg-real > .real-wrap { transition: none; }
+  .msg-real::before, .msg-real::after { animation: none !important; transition: none !important; }
 }
 .cursor {
   display: inline-block; width: 9px; height: 17px; margin-left: 2px; vertical-align: -3px;
