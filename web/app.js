@@ -22,6 +22,9 @@ const state = {
   pending: new Set(), // 已发出、等待服务器回显的 client_msg_id
   seenMsg: new Set(), // 当前聊天已渲染过的消息 id（去重/断线补拉）
   lastTS: 0,          // 当前聊天已收到的最大时间戳（断线补拉用）
+  lastRenderTS: 0,    // 当前聊天已渲染的最大时间戳（时间分割线用）
+  unread: 0,          // 页签隐藏期间累计的新消息数（标题计数）
+  baseTitle: '',      // 页面原始标题
   queue: [],          // 等待播放的消息
   animating: false,
   gen: 0,             // 切换聊天时 +1，让旧的动画自行作废
@@ -34,6 +37,83 @@ const state = {
   pendingSend: null,  // 会话尚未连上 WS 时暂存待发消息
   access: '完全访问', // 装饰性“权限档位”
 };
+
+/* ---------- 时间显示与消息通知 ---------- */
+
+const DIVIDER_GAP_SEC = 5 * 60; // 消息间隔超过 5 分钟插入时间分割线
+const pad2 = n => String(n).padStart(2, '0');
+
+function fmtClock(ts) {
+  const d = new Date(ts * 1000);
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
+function fmtDividerLabel(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  const hm = fmtClock(ts);
+  if (d.toDateString() === now.toDateString()) return hm;
+  if (d.toDateString() === yest.toDateString()) return '昨天 ' + hm;
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ` + hm;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ` + hm;
+}
+
+function fullStamp(ts) {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+// 与上一条消息间隔超阈值（或为首条）时插入居中时间分割线；
+// 只有真正插入分割线时才推进 anchor，避免连续短间隔消息被提前“顶掉”
+function ensureDivider(ts) {
+  if (!ts) return;
+  if (state.lastRenderTS && ts - state.lastRenderTS < DIVIDER_GAP_SEC) return;
+  const div = document.createElement('div');
+  div.className = 'time-divider';
+  div.textContent = fmtDividerLabel(ts);
+  $('#messages').appendChild(div);
+  state.lastRenderTS = ts;
+}
+
+function bumpUnread() {
+  if (!document.hidden) return;
+  state.unread++;
+  document.title = `(${state.unread}) ${state.baseTitle}`;
+}
+
+function resetUnread() {
+  if (state.unread) {
+    state.unread = 0;
+    document.title = state.baseTitle;
+  }
+}
+
+// 页签隐藏时：系统通知 + 标题计数；页签可见时什么都不做（消息本来就在眼前）
+function notifyMessage(convID, title, body) {
+  bumpUnread();
+  try {
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification(title, { body: body.slice(0, 120), tag: 'cngp-' + convID });
+      n.onclick = () => {
+        window.focus();
+        resetUnread();
+        if (convID !== state.cur) selectConv(convID);
+        n.close();
+      };
+    }
+  } catch {}
+}
+
+// 登录/注册成功时（用户手势内）请求通知授权；拒绝或 iOS 浏览器则静默降级为标题计数
+function askNotifyPermission() {
+  try {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  } catch {}
+}
 
 /* ---------- api ---------- */
 
@@ -84,7 +164,16 @@ function doLogoutLocal() {
 async function loadConvs(silent = false) {
   try {
     const d = await api('/api/conversations');
+    const prevTS = new Map(state.convs.map(c => [c.id, c.last_ts || 0]));
     state.convs = d.conversations || [];
+    // WS 只订阅当前聊天；侧栏轮询顺带探测其他聊天的新消息（含别人新发起的聊天）
+    if (prevTS.size) {
+      for (const c of state.convs) {
+        if (c.id !== state.cur && (c.last_ts || 0) > (prevTS.get(c.id) || 0)) {
+          notifyMessage(c.id, c.title, '收到新消息');
+        }
+      }
+    }
     renderConvList();
     if (!state.cur && state.convs.length) selectConv(state.convs[0].id);
   } catch (e) { if (!silent) toast(e.message); }
@@ -121,6 +210,7 @@ async function selectConv(id) {
   state.pending.clear();
   state.seenMsg = new Set();
   state.lastTS = 0;
+  state.lastRenderTS = 0;
   state.thinkingRow = null;
   hideTyping();
   renderConvList();
@@ -144,8 +234,8 @@ async function selectConv(id) {
     for (const m of msgs) {
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content);
-      else appendAIStatic(m.nickname, m.content);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);
+      else appendAIStatic(m.nickname, m.content, m.ts);
     }
     scrollBottom(true);
     connectWS(id);
@@ -170,13 +260,17 @@ function removeWelcome() {
   if (w) w.remove();
 }
 
-function appendOwn(content) {
+function appendOwn(content, ts) {
   removeWelcome();
   const wrap = document.createElement('div');
   wrap.className = 'msg-own';
   const b = document.createElement('div');
   b.className = 'bubble';
   b.textContent = content;
+  if (ts) {
+    ensureDivider(ts);
+    b.title = fullStamp(ts);
+  }
   wrap.appendChild(b);
   $('#messages').appendChild(wrap);
 }
@@ -193,11 +287,13 @@ function appendAIRow(nickname) {
   return { row, label };
 }
 
-function appendAIStatic(nickname, content) {
+function appendAIStatic(nickname, content, ts) {
+  if (ts) ensureDivider(ts);
   const r = appendAIRow(nickname);
   const body = document.createElement('div');
   body.className = 'ai-body';
   body.textContent = content;
+  if (ts) body.title = fullStamp(ts);
   r.row.appendChild(body);
 }
 
@@ -254,8 +350,8 @@ async function syncMissed(id) {
       }
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content);
-      else enqueueAI(m.nickname, m.content, null);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);
+      else enqueueAI(m.nickname, m.content, null, m.ts);
       scrollFollow();
     }
   } catch {}
@@ -281,7 +377,7 @@ function handleEvent(ev) {
         state.pending.delete(ev.client_msg_id);
         return;
       }
-      appendOwn(ev.content);
+      appendOwn(ev.content, ev.ts);
       scrollFollow();
     } else {
       // 记录“思考时长”：从看到对方开始打字（或本条开始渲染思考）到现在
@@ -290,7 +386,9 @@ function handleEvent(ev) {
         thinkSec = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));
       }
       hideTyping();
-      enqueueAI(ev.nickname, ev.content, thinkSec);
+      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts);
+      // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）
+      notifyMessage(state.cur, ev.nickname, ev.content);
     }
   } else if (ev.type === 'typing') {
     if (ev.sender_id !== state.me.id) showTyping(ev.nickname);
@@ -349,8 +447,8 @@ function hideTyping() {
 
 /* ---------- 播放队列：思考 → 已思考 N 秒 → 打字机 ---------- */
 
-function enqueueAI(nickname, content, thinkSec) {
-  state.queue.push({ nickname, content, thinkSec, gen: state.gen });
+function enqueueAI(nickname, content, thinkSec, ts) {
+  state.queue.push({ nickname, content, thinkSec, ts, gen: state.gen });
   pumpQueue();
 }
 
@@ -378,6 +476,7 @@ function pumpQueue() {
 
 function animateAI(item) {
   if (item.gen !== state.gen) { state.animating = false; pumpQueue(); return; }
+  if (item.ts) ensureDivider(item.ts);
   const r = appendAIRow(item.nickname);
   let body;
   if (item.thinkSec >= 1) {
@@ -392,6 +491,7 @@ function animateAI(item) {
     body.className = 'ai-body';
     r.row.appendChild(body);
   }
+  if (item.ts) body.title = fullStamp(item.ts);
   const cursor = document.createElement('span');
   cursor.className = 'cursor';
   const textNode = document.createTextNode('');
@@ -512,7 +612,7 @@ function doSend(text) {
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  appendOwn(text);
+  appendOwn(text, Math.floor(Date.now() / 1000));
   scrollFollow();
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: text, client_msg_id: cmid }));
@@ -598,6 +698,7 @@ function bind() {
       state.token = d.token;
       localStorage.setItem('cngp_token', d.token);
       state.me = d.user;
+      askNotifyPermission();
       showApp();
     } catch (err) { $('#loginError').textContent = err.message; }
   };
@@ -615,12 +716,14 @@ function bind() {
       state.token = d.token;
       localStorage.setItem('cngp_token', d.token);
       state.me = d.user;
+      askNotifyPermission();
       showApp();
     } catch (err) { $('#regError').textContent = err.message; }
   };
 
   $('#btnLogout').onclick = () => {
     api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
+    resetUnread();
     doLogoutLocal();
   };
 
@@ -669,9 +772,17 @@ function bind() {
 
 async function init() {
   bind();
-  // 轮询聊天列表：别人发来的新聊天会自动出现在侧栏
+  state.baseTitle = document.title;
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) resetUnread(); });
+  window.addEventListener('focus', resetUnread);
+  // 轮询聊天列表：别人发来的新聊天会自动出现在侧栏。
+  // 页签隐藏时降为每 15s 一次，保证后台仍能触发新消息通知
+  let pollTicks = 0;
   setInterval(() => {
-    if (state.token && state.me && !document.hidden) loadConvs(true);
+    pollTicks++;
+    if (!state.token || !state.me) return;
+    if (document.hidden && pollTicks % 3 !== 0) return;
+    loadConvs(true);
   }, 5000);
   if (!state.token) { showAuth(); return; }
   try {
