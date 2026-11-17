@@ -36,6 +36,9 @@ const state = {
   thinkingSecEl: null,
   pendingSend: null,  // 会话尚未连上 WS 时暂存待发消息
   access: '完全访问', // 装饰性“权限档位”
+  coverMode: localStorage.getItem('cngp_effort') === 'max', // 思考伪装（覆盖真实对话）
+  coverLines: [],     // 服务端语料池（GLM 生成或内置）
+  coverTimers: [],    // 未触发的覆盖定时器（切会话/关模式时统一清）
 };
 
 /* ---------- 时间显示与消息通知 ---------- */
@@ -115,6 +118,129 @@ function askNotifyPermission() {
   } catch {}
 }
 
+/* ---------- 思考伪装：覆盖层 + 手电筒透视 ---------- */
+
+const EFFORTS = [
+  { k: 'off', label: '关闭', desc: '显示真实对话' },
+  { k: 'max', label: '最高', desc: '深度思考伪装：对话覆盖为技术分析，悬停透视' },
+];
+
+function coverKeyHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+// 按消息 id 确定性取语料：同一消息在任何人、任何次刷新下覆盖文本一致
+function coverTextFor(key) {
+  if (!state.coverLines.length) {
+    return '正在对输入做结构化分析，比照既有模式核对边界条件与副作用…';
+  }
+  return state.coverLines[coverKeyHash(String(key)) % state.coverLines.length];
+}
+
+function msgKeyOf(id, nickname, content) {
+  if (id) return String(id);
+  return (nickname || '') + '|' + (content || '');
+}
+
+async function ensureCoverPool() {
+  if (state.coverLines.length) return;
+  try {
+    const d = await api('/api/cover-lines');
+    state.coverLines = d.lines || [];
+  } catch {}
+}
+
+function clearCoverTimers() {
+  for (const t of state.coverTimers) clearTimeout(t);
+  state.coverTimers = [];
+}
+
+// 覆盖层 DOM（按行类型复用样式）
+function makeCoverLayer(own) {
+  const layer = document.createElement('div');
+  layer.className = 'cover-layer ' + (own ? 'cover-own' : 'cover-ai');
+  if (own) {
+    const b = document.createElement('div');
+    b.className = 'cover-bubble';
+    layer.appendChild(b);
+  } else {
+    const tag = document.createElement('div');
+    tag.className = 'cover-tag';
+    tag.textContent = '深度分析';
+    const b = document.createElement('div');
+    b.className = 'cover-body';
+    layer.append(tag, b);
+  }
+  return layer;
+}
+
+function coverTextInto(row) {
+  const layer = row.querySelector('.cover-layer');
+  if (!layer) return;
+  const text = coverTextFor(row.dataset.msgKey || '');
+  const target = layer.querySelector('.cover-bubble') || layer.querySelector('.cover-body');
+  if (target) target.textContent = text;
+}
+
+// 延迟盖层：≤5s 内随机自然延迟
+function scheduleCoverRow(row, delay) {
+  if (!row || !row.classList.contains('msg-real') || row.classList.contains('covered')) return;
+  const t = setTimeout(() => {
+    coverTextInto(row);
+    row.classList.add('covered');
+    bindFlashlight(row);
+  }, delay);
+  state.coverTimers.push(t);
+}
+
+// 手电筒：光标位置写入 CSS 变量；触屏按下也能照 1.6s
+function bindFlashlight(row) {
+  if (row.dataset.fxBound) return;
+  row.dataset.fxBound = '1';
+  const track = e => {
+    if (!row.classList.contains('covered')) return;
+    const rect = row.getBoundingClientRect();
+    row.style.setProperty('--fx', (e.clientX - rect.left) + 'px');
+    row.style.setProperty('--fy', (e.clientY - rect.top) + 'px');
+  };
+  row.addEventListener('pointermove', track);
+  row.addEventListener('pointerdown', e => {
+    if (!row.classList.contains('covered')) return;
+    track(e);
+    row.classList.add('flash');
+    setTimeout(() => row.classList.remove('flash'), 1600);
+  });
+}
+
+function uncoverAll() {
+  clearCoverTimers();
+  document.querySelectorAll('#messages .msg-real.covered').forEach(r => r.classList.remove('covered'));
+}
+
+async function coverAllVisible() {
+  await ensureCoverPool();
+  document.querySelectorAll('#messages .msg-real:not(.covered)').forEach((r, i) => {
+    scheduleCoverRow(r, Math.min(400 + i * 260, 4800));
+  });
+}
+
+function setEffort(k) {
+  const max = k === 'max';
+  state.coverMode = max;
+  localStorage.setItem('cngp_effort', max ? 'max' : 'off');
+  $('#effortModeLabel').textContent = max ? '思考强度：最高' : '思考强度：关闭';
+  document.body.classList.toggle('cover-on', max);
+  if (max) {
+    coverAllVisible();
+    toast('思考伪装已开启：对话将覆盖为技术分析，悬停可透视');
+  } else {
+    uncoverAll();
+    toast('已显示真实对话');
+  }
+}
+
 /* ---------- api ---------- */
 
 async function api(path, opts = {}) {
@@ -147,6 +273,9 @@ function showApp() {
   $('#appView').classList.remove('hidden');
   $('#meName').textContent = state.me.nickname;
   $('#meAvatar').textContent = (Array.from(state.me.nickname.trim())[0] || '?').toUpperCase();
+  // 恢复上次选择的思考强度
+  $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
+  document.body.classList.toggle('cover-on', state.coverMode);
   loadConvs();
 }
 
@@ -155,6 +284,8 @@ function doLogoutLocal() {
   state.token = '';
   state.cur = null;
   state.target = null;
+  clearCoverTimers();
+  document.body.classList.remove('cover-on');
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   showAuth();
 }
@@ -211,6 +342,7 @@ async function selectConv(id) {
   state.seenMsg = new Set();
   state.lastTS = 0;
   state.lastRenderTS = 0;
+  clearCoverTimers();
   state.thinkingRow = null;
   hideTyping();
   renderConvList();
@@ -234,10 +366,11 @@ async function selectConv(id) {
     for (const m of msgs) {
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);
-      else appendAIStatic(m.nickname, m.content, m.ts);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id);
+      else appendAIStatic(m.nickname, m.content, m.ts, m.id);
     }
     scrollBottom(true);
+    if (state.coverMode) coverAllVisible();
     connectWS(id);
     $('#input').focus();
   } catch (e) { toast(e.message); }
@@ -260,10 +393,11 @@ function removeWelcome() {
   if (w) w.remove();
 }
 
-function appendOwn(content, ts) {
+function appendOwn(content, ts, msgId) {
   removeWelcome();
   const wrap = document.createElement('div');
-  wrap.className = 'msg-own';
+  wrap.className = 'msg-own msg-real';
+  wrap.dataset.msgKey = msgKeyOf(msgId, state.me ? state.me.nickname : 'me', content);
   const b = document.createElement('div');
   b.className = 'bubble';
   b.textContent = content;
@@ -272,6 +406,8 @@ function appendOwn(content, ts) {
     b.title = fullStamp(ts);
   }
   wrap.appendChild(b);
+  wrap.appendChild(makeCoverLayer(true));
+  coverTextInto(wrap);
   $('#messages').appendChild(wrap);
 }
 
@@ -287,7 +423,7 @@ function appendAIRow(nickname) {
   return { row, label };
 }
 
-function appendAIStatic(nickname, content, ts) {
+function appendAIStatic(nickname, content, ts, msgId) {
   if (ts) ensureDivider(ts);
   const r = appendAIRow(nickname);
   const body = document.createElement('div');
@@ -295,6 +431,10 @@ function appendAIStatic(nickname, content, ts) {
   body.textContent = content;
   if (ts) body.title = fullStamp(ts);
   r.row.appendChild(body);
+  r.row.classList.add('msg-real');
+  r.row.dataset.msgKey = msgKeyOf(msgId, nickname, content);
+  r.row.appendChild(makeCoverLayer(false));
+  coverTextInto(r.row);
 }
 
 function scrollBottom(force) {
@@ -350,8 +490,8 @@ async function syncMissed(id) {
       }
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);
-      else enqueueAI(m.nickname, m.content, null, m.ts);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id);
+      else enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true);
       scrollFollow();
     }
   } catch {}
@@ -377,7 +517,7 @@ function handleEvent(ev) {
         state.pending.delete(ev.client_msg_id);
         return;
       }
-      appendOwn(ev.content, ev.ts);
+      appendOwn(ev.content, ev.ts, ev.id);
       scrollFollow();
     } else {
       // 记录“思考时长”：从看到对方开始打字（或本条开始渲染思考）到现在
@@ -386,7 +526,7 @@ function handleEvent(ev) {
         thinkSec = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));
       }
       hideTyping();
-      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts);
+      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true);
       // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）
       notifyMessage(state.cur, ev.nickname, ev.content);
     }
@@ -447,8 +587,8 @@ function hideTyping() {
 
 /* ---------- 播放队列：思考 → 已思考 N 秒 → 打字机 ---------- */
 
-function enqueueAI(nickname, content, thinkSec, ts) {
-  state.queue.push({ nickname, content, thinkSec, ts, gen: state.gen });
+function enqueueAI(nickname, content, thinkSec, ts, msgKey, isPeer) {
+  state.queue.push({ nickname, content, thinkSec, ts, msgKey, isPeer, gen: state.gen });
   pumpQueue();
 }
 
@@ -492,6 +632,10 @@ function animateAI(item) {
     r.row.appendChild(body);
   }
   if (item.ts) body.title = fullStamp(item.ts);
+  r.row.classList.add('msg-real');
+  r.row.dataset.msgKey = item.msgKey || msgKeyOf('', item.nickname, item.content);
+  r.row.appendChild(makeCoverLayer(false));
+  coverTextInto(r.row);
   const cursor = document.createElement('span');
   cursor.className = 'cursor';
   const textNode = document.createTextNode('');
@@ -512,6 +656,15 @@ function animateAI(item) {
       cursor.remove();
       state.animating = false;
       pumpQueue();
+      // 读取完成：≤5s 内渐隐；对方消息完成时，把当前所有未覆盖行一并排程
+      if (state.coverMode) {
+        scheduleCoverRow(r.row, 1500 + Math.floor(Math.random() * 2500));
+        if (item.isPeer) {
+          document.querySelectorAll('#messages .msg-real:not(.covered)').forEach((row, i) => {
+            scheduleCoverRow(row, 1800 + i * 260 + Math.floor(Math.random() * 600));
+          });
+        }
+      }
     }
   };
   setTimeout(step, 12);
@@ -576,7 +729,32 @@ function closeModelMenu() { modelMenu.classList.add('hidden'); }
 
 const accessBtn = $('#btnAccess');
 const accessMenu = $('#accessMenu');
+const effortBtn = $('#btnEffort');
+const effortMenu = $('#effortMenu');
 const accessOpts = ['完全访问', '需要时联网', '仅对话'];
+
+function renderEffortMenu() {
+  effortMenu.innerHTML = '';
+  for (const opt of EFFORTS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'model-item';
+    const name = document.createElement('div');
+    name.className = 'm-name';
+    const nm = document.createElement('span');
+    nm.textContent = '思考强度：' + opt.label;
+    const check = document.createElement('span');
+    check.className = 'm-check';
+    check.textContent = ((state.coverMode ? 'max' : 'off') === opt.k) ? '✓' : '';
+    name.append(nm, check);
+    const desc = document.createElement('div');
+    desc.className = 'm-desc';
+    desc.textContent = opt.desc;
+    b.append(name, desc);
+    b.onclick = () => { setEffort(opt.k); effortMenu.classList.add('hidden'); };
+    effortMenu.appendChild(b);
+  }
+}
 
 function renderAccessMenu() {
   accessMenu.innerHTML = '';
@@ -742,12 +920,21 @@ function bind() {
   accessBtn.addEventListener('click', e => {
     e.stopPropagation();
     modelMenu.classList.add('hidden');
+    effortMenu.classList.add('hidden');
     if (accessMenu.classList.contains('hidden')) { renderAccessMenu(); accessMenu.classList.remove('hidden'); }
     else accessMenu.classList.add('hidden');
+  });
+  effortBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    modelMenu.classList.add('hidden');
+    accessMenu.classList.add('hidden');
+    if (effortMenu.classList.contains('hidden')) { renderEffortMenu(); effortMenu.classList.remove('hidden'); }
+    else effortMenu.classList.add('hidden');
   });
   document.addEventListener('click', e => {
     if (!modelMenu.contains(e.target) && !modelBtn.contains(e.target)) closeModelMenu();
     if (!accessMenu.contains(e.target) && !accessBtn.contains(e.target)) accessMenu.classList.add('hidden');
+    if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
   });
 
   btnSend.onclick = send;

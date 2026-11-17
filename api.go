@@ -187,6 +187,20 @@ func (s *server) handleModelSuggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": s.store.SuggestModelName()})
 }
 
+// handleCoverLines returns the thinking-disguise cover pool (auth required).
+func (s *server) handleCoverLines(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if s.authUser(r) == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	lines := s.cover.Lines()
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "count": len(lines)})
+}
+
 // handleConvWith returns (creating if needed) the 1:1 conversation between
 // the caller and the picked "model", so sending a message is enough to start
 // a chat — no manual conversation creation anywhere in the UI.

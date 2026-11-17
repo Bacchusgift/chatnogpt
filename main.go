@@ -105,10 +105,11 @@ func frontendForRequest(r *http.Request) fs.FS {
 type server struct {
 	store *Store
 	hub   *hub
+	cover *coverStore
 }
 
 func newServer(st *Store) *server {
-	return &server{store: st, hub: newHub()}
+	return &server{store: st, hub: newHub(), cover: &coverStore{lines: append([]string(nil), builtinCoverLines...), src: "builtin"}}
 }
 
 func main() {
@@ -130,6 +131,7 @@ func main() {
 		log.Fatalf("load store: %v", err)
 	}
 	srv := newServer(store)
+	srv.cover = initCoverPool(*dataDir)
 
 	if *open && isLoopbackAddr(*addr) {
 		go func() {
@@ -173,6 +175,7 @@ func buildMux(s *server) http.Handler {
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
+	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
 	mux.HandleFunc("/api/conversations/join", s.handleJoinConv)
 	mux.HandleFunc("/api/conversations/with", s.handleConvWith)
 	mux.HandleFunc("/api/conversations", s.handleConversations)

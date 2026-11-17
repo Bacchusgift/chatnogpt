@@ -449,3 +449,43 @@ func (c *testWS) readEvent(t *testing.T) map[string]any {
 		}
 	}
 }
+
+// ---- cover-lines: thinking-disguise pool endpoint ----
+
+func TestCoverLinesEndpoint(t *testing.T) {
+	ts := newTestServer(t)
+
+	// 未登录 → 401
+	code, _ := doJSON(t, "GET", ts.URL+"/api/cover-lines", "", nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("cover-lines without token: got %d, want 401", code)
+	}
+
+	// 登录后 → 200 + 非空语料池
+	tok := register(t, ts, "cover-user-a", "cover-model-a")
+	code, out := doJSON(t, "GET", ts.URL+"/api/cover-lines", tok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("cover-lines: got %d, want 200 (%v)", code, out)
+	}
+	raw, _ := out["lines"].([]any)
+	if len(raw) < 10 {
+		t.Fatalf("cover-lines: got %d lines, want >= 10", len(raw))
+	}
+	if _, ok := out["count"].(float64); !ok {
+		t.Fatalf("cover-lines: missing count field: %v", out)
+	}
+}
+
+// cover pool 文件持久化：initCoverPool 第二次加载应命中缓存文件
+func TestCoverPoolPersist(t *testing.T) {
+	dir := t.TempDir()
+	cs1 := initCoverPool(dir)
+	n1 := len(cs1.Lines())
+	if n1 < 10 {
+		t.Fatalf("pool too small: %d", n1)
+	}
+	cs2 := initCoverPool(dir)
+	if len(cs2.Lines()) != n1 {
+		t.Fatalf("pool reload mismatch: %d vs %d", len(cs2.Lines()), n1)
+	}
+}
