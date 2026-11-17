@@ -117,11 +117,18 @@ body.cover-on .msg-own.covered:not(.reveal-active):not(.flash) .own-cover {
   display: block; position: absolute; inset: 10px 18px;
   overflow: hidden; white-space: pre-wrap; word-break: break-word;
 }
+/* 图片消息隐藏原图和附带文字，气泡仅保留 [image]；主动悬停才展开。 */
+.msg-own .image-placeholder { display: none; }
+body.cover-on .msg-own.has-image.covered:not(.reveal-active):not(.flash) .own-original,
+body.cover-on .msg-own.has-image.covered:not(.reveal-active):not(.flash) .own-cover,
+body.cover-on .msg-own.has-image.covered:not(.reveal-active):not(.flash) .chat-image { display: none; }
+body.cover-on .msg-own.has-image.covered:not(.reveal-active):not(.flash) .image-placeholder { display: inline; }
 .msg-ai { margin: 0 0 26px; }
 .ai-label { font-size: 12.5px; font-weight: 600; color: #8e8e8e; margin-bottom: 3px; }
 .ai-body { white-space: pre-wrap; word-break: break-word; line-height: 1.75; font-size: 15.5px; }
 .chat-image { display: block; max-width: min(360px, 100%); max-height: 320px; border-radius: 12px; object-fit: contain; cursor: zoom-in; margin-top: 6px; }
 .bubble .chat-image { max-width: 100%; }
+body.cover-on .msg-ai.covered .chat-image { cursor: default; }
 .image-preview { display: flex; align-items: center; gap: 10px; padding: 8px; font-size: 13px; }
 .image-preview img { max-width: 90px; max-height: 80px; border-radius: 8px; }
 .image-preview button { color: #ddd; padding: 5px; }
@@ -191,6 +198,14 @@ body.cover-on .msg-real.covered.flash::after {
 .cover-ai .cover-body {
   white-space: pre-wrap; word-break: break-word; color: #ececec;
   font-size: 15.5px; line-height: 1.75;
+}
+.msg-real.has-image > .cover-layer { position: relative; min-height: 300px; }
+.msg-real.has-image .cover-body { overflow: hidden; }
+.cover-image-matte {
+  position: absolute; top: 54px; left: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: min(360px, 100%); height: 270px;
+  border-radius: 12px; background: #2f2f2f; color: #a9a9a9; font-size: 14px;
 }
 @media (prefers-reduced-motion: reduce) {
   .msg-real::before, .msg-real::after { animation: none !important; transition: none !important; }

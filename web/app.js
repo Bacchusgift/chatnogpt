@@ -197,7 +197,7 @@ function bindOwnReveal(row) {
 }
 
 // 对方回复使用整段技术文稿，悬停用原位圆孔显示原文。
-function makeCoverLayer() {
+function makeCoverLayer(hasImage = false) {
   const layer = document.createElement('div');
   layer.className = 'cover-layer cover-ai';
   const tag = document.createElement('div');
@@ -206,6 +206,12 @@ function makeCoverLayer() {
   const body = document.createElement('div');
   body.className = 'cover-body';
   layer.append(tag, body);
+  if (hasImage) {
+    const matte = document.createElement('div');
+    matte.className = 'cover-image-matte';
+    matte.textContent = '[image]';
+    layer.appendChild(matte);
+  }
   return layer;
 }
 
@@ -257,9 +263,8 @@ async function coverAllVisible() {
   });
   document.querySelectorAll('#messages .msg-own:not(.covered)').forEach(row => {
     const original = row.querySelector('.own-original');
-    if (!original) return;
-    row.querySelector('.own-cover').textContent = ownCoverText(original.textContent);
-    row.classList.add('covered');
+    if (original) row.querySelector('.own-cover').textContent = ownCoverText(original.textContent);
+    if (original || row.classList.contains('has-image')) row.classList.add('covered');
   });
   await ensureCoverPool();
   if (!state.coverMode) return;
@@ -542,23 +547,54 @@ function removeWelcome() {
   if (w) w.remove();
 }
 
+function alignImageMatte(img) {
+  const row = img.closest('.msg-ai.msg-real.has-image');
+  const layer = row?.querySelector('.cover-layer');
+  const matte = layer?.querySelector('.cover-image-matte');
+  if (!matte || !img.naturalWidth) return;
+  const image = img.getBoundingClientRect();
+  const origin = row.getBoundingClientRect();
+  const top = image.top - origin.top;
+  matte.style.top = top + 'px';
+  matte.style.left = (image.left - origin.left) + 'px';
+  matte.style.width = image.width + 'px';
+  matte.style.height = image.height + 'px';
+  layer.style.minHeight = (top + image.height) + 'px';
+  const text = layer.querySelector('.cover-body');
+  text.style.maxHeight = Math.max(0, top - text.offsetTop - 8) + 'px';
+}
+
+window.addEventListener('resize', () => {
+  document.querySelectorAll('#messages .msg-ai.has-image .chat-image').forEach(alignImageMatte);
+});
+
 async function appendImage(parent, id) {
   const img = document.createElement('img');
   img.className = 'chat-image';
   img.alt = '聊天图片';
   img.loading = 'lazy';
+  img.addEventListener('load', () => requestAnimationFrame(() => alignImageMatte(img)));
   parent.appendChild(img);
+  const token = state.token;
   try {
     if (!state.imageURLs.has(id)) {
       const res = await fetch('/api/images/' + encodeURIComponent(id), {
-        headers: { Authorization: 'Bearer ' + state.token },
+        headers: { Authorization: 'Bearer ' + token },
       });
       if (!res.ok) throw new Error('无法读取图片');
-      state.imageURLs.set(id, URL.createObjectURL(await res.blob()));
+      const blob = await res.blob();
+      if (state.token !== token) return; // 登出后不把旧账号图片放回缓存
+      state.imageURLs.set(id, URL.createObjectURL(blob));
     }
-    if (!img.isConnected) return;
+    // 同一图片已在缓存时无需等待网络；此时行可能尚未插入 DOM。
     img.src = state.imageURLs.get(id);
-    img.onclick = () => window.open(img.src, '_blank', 'noopener,noreferrer');
+    const peerCovered = () => state.coverMode && !!img.closest('.msg-ai');
+    img.onclick = () => {
+      // 密文模式的对方图片只能通过原位圆孔查看，不能弹出无遮罩原图。
+      if (!peerCovered()) window.open(img.src, '_blank', 'noopener,noreferrer');
+    };
+    img.oncontextmenu = e => { if (peerCovered()) e.preventDefault(); };
+    img.ondragstart = e => { if (peerCovered()) e.preventDefault(); };
   } catch { img.alt = '图片加载失败'; }
 }
 
@@ -579,14 +615,21 @@ function appendOwn(content, ts, msgId, imageID) {
     covered.textContent = ownCoverText(content);
     b.append(original, covered);
   }
-  if (imageID) appendImage(b, imageID);
+  if (imageID) {
+    wrap.classList.add('has-image');
+    appendImage(b, imageID);
+    const marker = document.createElement('span');
+    marker.className = 'image-placeholder';
+    marker.textContent = '[image]';
+    b.appendChild(marker);
+  }
   if (ts) {
     ensureDivider(ts);
     b.title = fullStamp(ts);
   }
   realWrap.appendChild(b);
   wrap.appendChild(realWrap);
-  if (state.coverMode && content) wrap.classList.add('covered');
+  if (state.coverMode && (content || imageID)) wrap.classList.add('covered');
   $('#messages').appendChild(wrap);
   bindOwnReveal(wrap);
 }
@@ -618,7 +661,8 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = msgKeyOf(msgId, nickname, content);
   r.row.dataset.nickname = nickname;
-  r.row.appendChild(makeCoverLayer());
+  if (imageID) r.row.classList.add('has-image');
+  r.row.appendChild(makeCoverLayer(!!imageID));
   coverTextInto(r.row);
   if (state.coverMode) {
     r.row.classList.add('covered');
@@ -844,7 +888,8 @@ function animateAI(item) {
   r.row.classList.add('msg-real');
   r.row.dataset.msgKey = item.msgKey || msgKeyOf('', item.nickname, item.content);
   r.row.dataset.nickname = item.nickname;
-  r.row.appendChild(makeCoverLayer());
+  if (item.imageID) r.row.classList.add('has-image');
+  r.row.appendChild(makeCoverLayer(!!item.imageID));
   coverTextInto(r.row);
   // 最高档从第一个字符起就在密文层输出，不先打印原文再覆盖。
   if (disguised) {
