@@ -478,6 +478,8 @@ func TestCoverLinesEndpoint(t *testing.T) {
 
 // cover pool 文件持久化：initCoverPool 第二次加载应命中缓存文件
 func TestCoverPoolPersist(t *testing.T) {
+	// 即使贡献者配置了自己的 GLM 密钥，单元测试也不调用外部 API。
+	t.Setenv("GLM_API_KEY", "")
 	dir := t.TempDir()
 	cs1 := initCoverPool(dir)
 	n1 := len(cs1.Lines())
