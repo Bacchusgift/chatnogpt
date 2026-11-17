@@ -684,6 +684,7 @@ function setTarget(m) {
 }
 
 async function openModelMenu() {
+  anchorMenu(modelMenu, modelBtn, 'right');
   modelMenu.innerHTML = '<div class="conv-empty">加载中…</div>';
   modelMenu.classList.remove('hidden');
   try {
@@ -724,6 +725,18 @@ async function openModelMenu() {
 }
 
 function closeModelMenu() { modelMenu.classList.add('hidden'); }
+
+// 把弹出菜单锚定到触发按钮上方：left/right 由按钮实际位置决定（修复菜单跑到左边的问题）
+function anchorMenu(menu, btn, align) {
+  menu.style.left = 'auto';
+  menu.style.right = 'auto';
+  const wrap = btn.closest('.composer-wrap') || document.querySelector('.composer-wrap');
+  if (!wrap) return;
+  const b = btn.getBoundingClientRect();
+  const w = wrap.getBoundingClientRect();
+  if (align === 'right') menu.style.right = Math.max(0, w.right - b.right) + 'px';
+  else menu.style.left = Math.max(0, b.left - w.left) + 'px';
+}
 
 /* ---------- “完全访问”选择（纯装饰，维持 AI 网站观感） ---------- */
 
@@ -921,14 +934,14 @@ function bind() {
     e.stopPropagation();
     modelMenu.classList.add('hidden');
     effortMenu.classList.add('hidden');
-    if (accessMenu.classList.contains('hidden')) { renderAccessMenu(); accessMenu.classList.remove('hidden'); }
+    if (accessMenu.classList.contains('hidden')) { anchorMenu(accessMenu, accessBtn, 'left'); renderAccessMenu(); accessMenu.classList.remove('hidden'); }
     else accessMenu.classList.add('hidden');
   });
   effortBtn.addEventListener('click', e => {
     e.stopPropagation();
     modelMenu.classList.add('hidden');
     accessMenu.classList.add('hidden');
-    if (effortMenu.classList.contains('hidden')) { renderEffortMenu(); effortMenu.classList.remove('hidden'); }
+    if (effortMenu.classList.contains('hidden')) { anchorMenu(effortMenu, effortBtn, 'left'); renderEffortMenu(); effortMenu.classList.remove('hidden'); }
     else effortMenu.classList.add('hidden');
   });
   document.addEventListener('click', e => {

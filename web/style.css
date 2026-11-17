@@ -281,6 +281,8 @@ body.cover-on .msg-real.covered.flash .cover-layer::before { opacity: 1; }
   box-shadow: 0 12px 40px rgba(0,0,0,.45);
   padding: 6px; z-index: 30; max-height: 330px; overflow-y: auto;
 }
+/* 模型选择器在右下角：无 JS 时也右对齐兜底（打开时由 JS 按按钮实际位置锚定） */
+#modelMenu { left: auto; right: 16px; }
 .model-item { display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 10px; }
 .model-item:hover { background: rgba(255,255,255,.06); }
 .model-item .m-name { font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; color: #ececec; }
