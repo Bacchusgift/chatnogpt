@@ -166,9 +166,10 @@ body.cover-on .msg-real.covered:is(.reveal-active, .flash) > .cover-layer {
   mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
 }
 
-/* 光晕 + 镜筒光环：挂在行容器上（行无 overflow 裁切），跟随光标，呼吸脉冲 */
+/* 光晕 + 镜筒光环：fixed 跟随物理光标，不参与滚动区布局，
+   否则最后一条消息的悬停光晕会撑大 scrollHeight，导致内容跳动 */
 body.cover-on .msg-real.covered::before {
-  content: ''; position: absolute; left: var(--fx, 50%); top: var(--fy, 50%); z-index: 3;
+  content: ''; position: fixed; left: var(--gx, -9999px); top: var(--gy, -9999px); z-index: 3;
   width: calc(var(--hole, 140px) * 2.6); height: calc(var(--hole, 140px) * 2.6);
   transform: translate(-50%, -50%);
   background: radial-gradient(circle,
@@ -176,7 +177,7 @@ body.cover-on .msg-real.covered::before {
   opacity: 0; transition: opacity .3s ease; pointer-events: none;
 }
 body.cover-on .msg-real.covered::after {
-  content: ''; position: absolute; left: var(--fx, 50%); top: var(--fy, 50%); z-index: 3;
+  content: ''; position: fixed; left: var(--gx, -9999px); top: var(--gy, -9999px); z-index: 3;
   width: calc(var(--hole, 140px) * 2); height: calc(var(--hole, 140px) * 2);
   transform: translate(-50%, -50%); border-radius: 50%;
   border: 1.5px solid rgba(140, 235, 190, .38);

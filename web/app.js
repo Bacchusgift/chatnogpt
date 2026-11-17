@@ -273,6 +273,9 @@ function bindFlashlight(row) {
     const rect = row.getBoundingClientRect();
     row.style.setProperty('--fx', (e.clientX - rect.left) + 'px');
     row.style.setProperty('--fy', (e.clientY - rect.top) + 'px');
+    // 光晕用视口坐标：fixed 定位，不影响滚动高度
+    row.style.setProperty('--gx', e.clientX + 'px');
+    row.style.setProperty('--gy', e.clientY + 'px');
   };
   row.addEventListener('pointermove', e => {
     track(e);
