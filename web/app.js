@@ -155,6 +155,7 @@ async function ensureCoverPool() {
 function clearCoverTimers() {
   for (const t of state.coverTimers) clearTimeout(t);
   state.coverTimers = [];
+  document.querySelectorAll('#messages .cover-queued').forEach(row => row.classList.remove('cover-queued'));
 }
 
 // 覆盖层 DOM（按行类型复用样式）
@@ -188,8 +189,13 @@ function coverTextInto(row) {
 
 // 延迟盖层：≤5s 内随机自然延迟
 function scheduleCoverRow(row, delay) {
-  if (!row || !row.classList.contains('msg-real') || row.classList.contains('covered')) return;
+  if (!row || !row.classList.contains('msg-real') ||
+      row.classList.contains('covered') || row.classList.contains('cover-queued') ||
+      row.classList.contains('awaiting-reply')) return;
+  row.classList.add('cover-queued');
   const t = setTimeout(() => {
+    row.classList.remove('cover-queued');
+    if (!state.coverMode || !row.isConnected || row.classList.contains('awaiting-reply')) return;
     coverTextInto(row);
     row.classList.add('covered');
     bindFlashlight(row);
@@ -225,7 +231,8 @@ function uncoverAll() {
 
 async function coverAllVisible() {
   await ensureCoverPool();
-  document.querySelectorAll('#messages .msg-real:not(.covered)').forEach((r, i) => {
+  if (!state.coverMode) return;
+  document.querySelectorAll('#messages .msg-real:not(.covered):not(.awaiting-reply)').forEach((r, i) => {
     scheduleCoverRow(r, Math.min(400 + i * 260, 4800));
   });
 }
@@ -416,6 +423,7 @@ function appendOwn(content, ts, msgId) {
   wrap.appendChild(makeCoverLayer(true));
   coverTextInto(wrap);
   $('#messages').appendChild(wrap);
+  return wrap;
 }
 
 function appendAIRow(nickname) {
@@ -668,11 +676,17 @@ function animateAI(item) {
       cursor.remove();
       state.animating = false;
       pumpQueue();
-      // 读取完成：≤5s 内渐隐；对方消息完成时，把当前所有未覆盖行一并排程
+      // 自己刚发出的消息至少保留到对方回复读完，再延迟覆盖。
+      if (item.isPeer) {
+        document.querySelectorAll('#messages .msg-own.awaiting-reply').forEach((row, i) => {
+          row.classList.remove('awaiting-reply');
+          if (state.coverMode) scheduleCoverRow(row, 5000 + i * 260);
+        });
+      }
       if (state.coverMode) {
         scheduleCoverRow(r.row, 1500 + Math.floor(Math.random() * 2500));
         if (item.isPeer) {
-          document.querySelectorAll('#messages .msg-real:not(.covered)').forEach((row, i) => {
+          document.querySelectorAll('#messages .msg-real:not(.covered):not(.awaiting-reply)').forEach((row, i) => {
             scheduleCoverRow(row, 1800 + i * 260 + Math.floor(Math.random() * 600));
           });
         }
@@ -815,7 +829,8 @@ function doSend(text) {
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  appendOwn(text, Math.floor(Date.now() / 1000));
+  const row = appendOwn(text, Math.floor(Date.now() / 1000));
+  row.classList.add('awaiting-reply');
   scrollFollow();
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: text, client_msg_id: cmid }));

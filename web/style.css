@@ -134,6 +134,19 @@ body.cover-on .msg-real.covered:is(:hover, .flash) > .cover-layer {
   mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy), transparent calc(var(--hole) - 1px), #000 var(--hole));
 }
 
+/* 自己的原文可能只有一行，伪装却有数行：把原文气泡放在圆孔中央，
+   避免光圈停在长气泡下半部时只看到空白。关闭伪装后仍恢复原始位置。 */
+body.cover-on .msg-own.covered:is(:hover, .flash) > .real-wrap {
+  position: absolute; left: var(--fx); top: var(--fy);
+  width: min(260px, 100%); transform: translate(-50%, -50%);
+  z-index: 1; pointer-events: none; overflow: hidden;
+  -webkit-mask-image: radial-gradient(circle var(--hole) at center, #000 calc(var(--hole) - 1px), transparent var(--hole));
+  mask-image: radial-gradient(circle var(--hole) at center, #000 calc(var(--hole) - 1px), transparent var(--hole));
+}
+body.cover-on .msg-own.covered:is(:hover, .flash) > .real-wrap .bubble {
+  width: 100%; max-width: none; max-height: 260px; overflow: hidden;
+}
+
 /* 光晕 + 镜筒光环：挂在行容器上（行无 overflow 裁切），跟随光标，呼吸脉冲 */
 body.cover-on .msg-real.covered::before {
   content: ''; position: absolute; left: var(--fx, 50%); top: var(--fy, 50%); z-index: 3;
