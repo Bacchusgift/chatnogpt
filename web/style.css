@@ -115,15 +115,15 @@ input, textarea { font: inherit; color: inherit; }
 
 .msg-real { position: relative; }
 
-/* 真实内容：盖层时模糊渐隐，悬停/触屏快速还原 */
+/* 真实内容：盖层时纯透明隐藏（不留模糊，保证孔内透视清晰），悬停瞬间还原 */
 .msg-real .bubble, .msg-real .ai-label, .msg-real .ai-body, .msg-real .thought-line {
-  transition: opacity .9s ease, filter .9s ease;
+  transition: opacity .9s ease;
 }
 body.cover-on .msg-real.covered .bubble,
 body.cover-on .msg-real.covered .ai-label,
 body.cover-on .msg-real.covered .ai-body,
 body.cover-on .msg-real.covered .thought-line {
-  opacity: 0; filter: blur(6px);
+  opacity: 0;
 }
 body.cover-on .msg-real.covered:hover .bubble,
 body.cover-on .msg-real.covered:hover .ai-label,
@@ -133,7 +133,7 @@ body.cover-on .msg-real.covered.flash .bubble,
 body.cover-on .msg-real.covered.flash .ai-label,
 body.cover-on .msg-real.covered.flash .ai-body,
 body.cover-on .msg-real.covered.flash .thought-line {
-  opacity: 1; filter: none; transition-duration: .3s;
+  opacity: 1; transition-duration: .08s;
 }
 
 /* 覆盖层：盖层时淡入，默认挡住真实内容；不遮时不可交互 */
@@ -147,26 +147,46 @@ body.cover-on .msg-real.covered .cover-layer { opacity: 1; pointer-events: auto;
 body.cover-on .msg-real.covered:hover .cover-layer,
 body.cover-on .msg-real.covered.flash .cover-layer { transition-duration: .4s; }
 
-/* 手电筒：悬停/触屏按下时在光标处挖孔透视（孔径带过渡，无 hover 时不挖孔） */
-.cover-layer { --fx: 50%; --fy: 50%; }
+/* 手电筒：悬停/触屏按下时出现圆形遮罩孔，孔内直接清晰看到真实内容。
+   边缘仅留 12px 羽化抗锯齿，避免双层文字叠影 */
+.cover-layer { --fx: 50%; --fy: 50%; --hole: 140px; }
 body.cover-on .msg-real.covered:hover .cover-layer,
 body.cover-on .msg-real.covered.flash .cover-layer {
-  -webkit-mask-image: radial-gradient(circle 150px at var(--fx) var(--fy),
-    transparent 0 55px, rgba(0,0,0,.45) 95px, rgba(0,0,0,.88) 130px, #000 150px);
-  mask-image: radial-gradient(circle 150px at var(--fx) var(--fy),
-    transparent 0 55px, rgba(0,0,0,.45) 95px, rgba(0,0,0,.88) 130px, #000 150px);
+  -webkit-mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy),
+    transparent 0 calc(var(--hole) - 12px), #000 var(--hole));
+  mask-image: radial-gradient(circle var(--hole) at var(--fx) var(--fy),
+    transparent 0 calc(var(--hole) - 12px), #000 var(--hole));
 }
 
-/* 光晕：跟随光标的暖光圈 + 轻微暗角，营造手电筒打在屏幕上的质感 */
+/* 光晕：跟随光标的柔光 */
 .cover-layer::before {
   content: ''; position: absolute; left: var(--fx); top: var(--fy);
-  width: 300px; height: 300px; transform: translate(-50%, -50%);
+  width: calc(var(--hole) * 2.6); height: calc(var(--hole) * 2.6);
+  transform: translate(-50%, -50%);
   background: radial-gradient(circle,
-    rgba(140, 235, 190, .16) 0%, rgba(140, 235, 190, .07) 38%, transparent 68%);
-  opacity: 0; transition: opacity .35s ease; pointer-events: none;
+    rgba(140, 235, 190, .14) 0%, rgba(140, 235, 190, .06) 40%, transparent 66%);
+  opacity: 0; transition: opacity .3s ease; pointer-events: none;
 }
 body.cover-on .msg-real.covered:hover .cover-layer::before,
 body.cover-on .msg-real.covered.flash .cover-layer::before { opacity: 1; }
+
+/* 镜筒光环：套在圆孔边缘，呼吸脉冲 */
+.cover-layer::after {
+  content: ''; position: absolute; left: var(--fx); top: var(--fy);
+  width: calc(var(--hole) * 2); height: calc(var(--hole) * 2);
+  transform: translate(-50%, -50%); border-radius: 50%;
+  border: 1.5px solid rgba(140, 235, 190, .38);
+  box-shadow: 0 0 26px rgba(140, 235, 190, .22), inset 0 0 34px rgba(140, 235, 190, .10);
+  opacity: 0; transition: opacity .25s ease; pointer-events: none;
+}
+body.cover-on .msg-real.covered:hover .cover-layer::after,
+body.cover-on .msg-real.covered.flash .cover-layer::after {
+  opacity: 1; animation: torchPulse 2.4s ease-in-out infinite;
+}
+@keyframes torchPulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50%      { transform: translate(-50%, -50%) scale(1.045); }
+}
 
 /* 覆盖文本样式：AI 感的青绿色技术独白 */
 .cover-ai .cover-tag { font-size: 12.5px; font-weight: 600; color: #6fbf9d; margin: 6px 0 3px; }

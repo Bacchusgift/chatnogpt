@@ -205,6 +205,7 @@ function bindFlashlight(row) {
     row.style.setProperty('--fx', (e.clientX - rect.left) + 'px');
     row.style.setProperty('--fy', (e.clientY - rect.top) + 'px');
   };
+  row.addEventListener('pointerenter', track);
   row.addEventListener('pointermove', track);
   row.addEventListener('pointerdown', e => {
     if (!row.classList.contains('covered')) return;
