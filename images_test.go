@@ -114,9 +114,18 @@ func TestMultipleConversationsAndRename(t *testing.T) {
 
 func TestConversationTitleAndImageIndexPersist(t *testing.T) {
 	dir := t.TempDir()
-	st, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
+	var st, reloaded Store
+	var err error
+	if dsn := testDSN(t); dsn != "" {
+		st, err = OpenStore(dsn, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		st, err = OpenFileStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	a, _, err := st.Register("persistence-a", "password123")
 	if err != nil {
@@ -134,7 +143,11 @@ func TestConversationTitleAndImageIndexPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.RecordImage("stored-image", a.ID)
-	reloaded, err := LoadStore(dir)
+	if dsn := testDSN(t); dsn != "" {
+		reloaded, err = OpenStore(dsn, dir)
+	} else {
+		reloaded, err = OpenFileStore(dir)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

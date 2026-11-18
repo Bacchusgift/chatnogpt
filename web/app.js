@@ -99,38 +99,8 @@ function resetUnread() {
 function unreadBadgeEl(count) {
   const badge = document.createElement('span');
   badge.className = 'conv-unread';
-  badge.textContent = count > 99 ? '99+' : String(count);
   badge.setAttribute('aria-label', `${count} 条未读消息`);
   return badge;
-}
-
-let notificationAudio;
-function unlockNotificationSound() {
-  try {
-    const Audio = window.AudioContext || window.webkitAudioContext;
-    if (!Audio) return;
-    notificationAudio ||= new Audio();
-    if (notificationAudio.state === 'suspended') notificationAudio.resume().catch(() => {});
-  } catch {}
-}
-function playNotificationSound() {
-  try {
-    const Audio = window.AudioContext || window.webkitAudioContext;
-    if (!Audio) return;
-    if (notificationAudio.state !== 'running') return;
-    const start = notificationAudio.currentTime;
-    const oscillator = notificationAudio.createOscillator();
-    const gain = notificationAudio.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(740, start);
-    oscillator.frequency.setValueAtTime(920, start + .08);
-    gain.gain.setValueAtTime(.0001, start);
-    gain.gain.exponentialRampToValueAtTime(.08, start + .015);
-    gain.gain.exponentialRampToValueAtTime(.0001, start + .22);
-    oscillator.connect(gain).connect(notificationAudio.destination);
-    oscillator.start(start);
-    oscillator.stop(start + .23);
-  } catch {}
 }
 
 async function markConversationRead(id) {
@@ -142,19 +112,51 @@ async function markConversationRead(id) {
 
 // 新消息提醒：标题计数 + 浏览器系统通知；onScreen 表示消息正显示在当前会话里，
 // 页签可见时不重复弹窗（内容已在眼前），页签隐藏时照常提醒。
+const NOTIF_ICON = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 32 32\'%3E%3Ccircle cx=\'16\' cy=\'16\' r=\'14\' fill=\'%230d0d0d\'/%3E%3Cpath d=\'M9 13h14M9 18h9\' stroke=\'white\' stroke-width=\'2.4\' stroke-linecap=\'round\'/%3E%3C/svg%3E';
+
+// 新消息提示音：短促双音，可关闭（通知声音开关在“思考强度”菜单里）
+let notifyAudioCtx = null;
+function playNotifySound() {
+  try {
+    if (localStorage.getItem('cngp_sound') !== '1') return;
+    notifyAudioCtx = notifyAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (notifyAudioCtx.state === 'suspended') notifyAudioCtx.resume();
+    const t = notifyAudioCtx.currentTime;
+    const osc = notifyAudioCtx.createOscillator();
+    const gain = notifyAudioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, t);
+    osc.frequency.setValueAtTime(660, t + 0.12);
+    gain.gain.setValueAtTime(0.001, t);
+    gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    osc.connect(gain).connect(notifyAudioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.45);
+  } catch {}
+}
+
 function notifyMessage(convID, title, body, onScreen = false) {
   bumpUnread();
+  playNotifySound();
   try {
-    if ((!onScreen || document.hidden) && 'Notification' in window && Notification.permission === 'granted') {
-      const n = new Notification(title, { body: body.slice(0, 120), tag: 'cngp-' + convID });
-      n.onclick = () => {
+    if (!('Notification' in window)) return;
+    // 只有“正在看这个会话且窗口聚焦”时才不弹（消息已在眼前），其余一律系统级弹出
+    if (onScreen && !document.hidden && document.hasFocus()) return;
+    if (Notification.permission !== 'granted') return;
+    const n = new Notification(title, {
+      body: body.slice(0, 120),
+      tag: 'cngp-' + convID,
+      icon: NOTIF_ICON,
+      requireInteraction: true, // 常驻直到点击，不再几秒后自动消失
+      silent: false,
+    });n.onclick = () => {
         window.focus();
         resetUnread();
         if (convID !== state.cur) selectConv(convID);
         else markConversationRead(convID);
-        n.close();
-      };
-    }
+      n.close();
+    };
   } catch {}
 }
 
@@ -384,6 +386,34 @@ function showApp() {
   if (state.coverMode) ensureCoverPool();
   loadConvs();
   novelLoad();
+  maybeShowNotifBanner();
+}
+
+// 通知授权引导：未授权时在输入区上方展示，授权成功或点“暂不”后本次不再出现
+function maybeShowNotifBanner() {
+  try {
+    if (!('Notification' in window) || Notification.permission === 'granted') return;
+    if (localStorage.getItem('cngp_notif_banner') === '0') return;
+    $('#notifBanner')?.remove();
+    const bar = document.createElement('div');
+    bar.id = 'notifBanner';
+    bar.className = 'notif-banner';
+    bar.append('开启系统通知，第一时间收到新消息');
+    const enable = document.createElement('button');
+    enable.textContent = '开启系统通知';
+    enable.onclick = async () => {
+      try {
+        const p = await Notification.requestPermission();
+        if (p === 'granted') { bar.remove(); toast('系统通知已开启'); }
+        else { bar.textContent = '通知已被浏览器拒绝：请在地址栏左侧站点设置里允许通知后刷新'; }
+      } catch {}
+    };
+    const later = document.createElement('button');
+    later.textContent = '暂不';
+    later.onclick = () => { localStorage.setItem('cngp_notif_banner', '0'); bar.remove(); };
+    bar.append(enable, later);
+    document.querySelector('.composer-wrap').prepend(bar);
+  } catch {}
 }
 
 function doLogoutLocal() {
@@ -428,7 +458,6 @@ async function loadConvs(silent = false) {
       if (hadConvs && (c.unread_count || 0) > (prevUnread.get(c.id) || 0)) {
         if (c.id !== state.cur || document.hidden) {
           notifyMessage(c.id, c.title, '收到新消息');
-          playNotificationSound();
         }
       }
     }
@@ -437,9 +466,45 @@ async function loadConvs(silent = false) {
   } catch (e) { if (!silent) toast(e.message); }
 }
 
+let searchHits = null;
+
+async function runMessageSearch() {
+  const q = $('#msgSearch').value.trim();
+  if (!q) { searchHits = null; renderConvList(); return; }
+  try {
+    const d = await api('/api/search?q=' + encodeURIComponent(q));
+    searchHits = d.hits || [];
+    renderConvList();
+  } catch (e) { toast(e.message); }
+}
+
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
+  if (searchHits) {
+    const head = document.createElement('div');
+    head.className = 'conv-empty';
+    head.textContent = '搜索结果 ' + searchHits.length + ' 条（清空搜索框返回）';
+    list.appendChild(head);
+    for (const hit of searchHits) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'conv-item search-hit';
+      const t = document.createElement('div');
+      t.textContent = hit.title;
+      const snippet = document.createElement('div');
+      snippet.className = 'search-snippet';
+      const content = hit.message.content || '';
+      const at = content.toLowerCase().indexOf($('#msgSearch').value.trim().toLowerCase());
+      snippet.textContent = at >= 0
+        ? content.slice(Math.max(0, at - 16), at + 44)
+        : content.slice(0, 60);
+      b.append(t, snippet);
+      b.onclick = () => { selectConv(hit.conv_id); closeSidebarMobile(); };
+      list.appendChild(b);
+    }
+    return;
+  }
   if (!state.convs.length && !novelModels.length) {
     const p = document.createElement('div');
     p.className = 'conv-empty';
@@ -508,7 +573,61 @@ async function startNewConversation() {
       };
       panel.insertBefore(btn, cancel);
     }
+    const roomBtn = document.createElement('button');
+    roomBtn.textContent = '＋ 创建群聊室';
+    roomBtn.onclick = () => { close(); createRoomModal(); };
+    panel.insertBefore(roomBtn, cancel);
+    const sep = document.createElement('div');
+    sep.className = 'time-divider';
+    sep.textContent = '';
+    panel.insertBefore(sep, roomBtn);
   } catch (e) { close(); toast(e.message); }
+}
+
+function createRoomModal() {
+  const root = $('#modalRoot');
+  root.innerHTML = '';
+  const overlay = document.createElement('div');
+  overlay.className = 'picker-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'picker-panel';
+  const heading = document.createElement('h2');
+  heading.textContent = '创建群聊室';
+  const titleField = document.createElement('input');
+  titleField.placeholder = '房间名称';
+  titleField.maxLength = 60;
+  const inviteField = document.createElement('input');
+  inviteField.placeholder = '邀请成员（模型名，用逗号分隔，可留空）';
+  const status = document.createElement('p');
+  status.className = 'novel-hint';
+  status.style.margin = '8px 0 0';
+  const save = document.createElement('button');
+  save.textContent = '创建房间';
+  const close = () => { root.innerHTML = ''; };
+  const cancel = document.createElement('button');
+  cancel.className = 'cancel';
+  cancel.textContent = '取消';
+  cancel.onclick = close;
+  save.onclick = async () => {
+    const invite = inviteField.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean);
+    save.disabled = true;
+    status.textContent = '';
+    try {
+      const d = await api('/api/rooms', { body: { title: titleField.value, invite } });
+      close();
+      if (d.missing?.length) toast('未找到成员：' + d.missing.join('、'));
+      await loadConvs(true);
+      await selectConv(d.conversation.id);
+      closeSidebarMobile();
+    } catch (e) {
+      save.disabled = false;
+      status.textContent = e.message;
+    }
+  };
+  panel.append(heading, titleField, inviteField, status, save, cancel);
+  overlay.appendChild(panel);
+  root.appendChild(overlay);
+  titleField.focus();
 }
 
 function renameConv(id, title) {
@@ -557,7 +676,8 @@ async function selectConv(id) {
     const d = await api('/api/conversations/' + id);
     if (state.cur !== id || state.gen !== gen) return;
     state.curInfo = d.conversation;
-    $('#convTitle').textContent = d.conversation.title;
+    $('#convTitle').textContent = d.conversation.title +
+      (d.conversation.kind === 1 ? ' · ' + d.conversation.member_count + ' 人' : '');
     $('#btnRenameConv').classList.remove('hidden');
     // 打开某个聊天 = 选中了对方那个“模型”
     if (d.conversation.peer_id) {
@@ -816,7 +936,6 @@ async function syncMissed(id) {
         const c = state.convs.find(c => c.id === id);
         if (c) { c.unread_count = (c.unread_count || 0) + 1; renderConvList(); }
         notifyMessage(state.cur, m.nickname, state.coverMode ? '收到新回复，点击查看' : m.content, true);
-        playNotificationSound();
       }
     }
   } catch {}
@@ -858,7 +977,6 @@ function handleEvent(ev) {
       if (document.hidden) {
         const c = state.convs.find(c => c.id === state.cur);
         if (c) { c.unread_count = (c.unread_count || 0) + 1; renderConvList(); }
-        playNotificationSound();
       } else {
         markConversationRead(state.cur);
       }
@@ -1245,13 +1363,25 @@ async function send() {
   const text = input.value.trim();
   const attachment = state.attachment;
   if (!text && !attachment) return;
-  if (!state.target) { toast('请先在左下角选择一个模型'); return; }
-  if (state.target.custom) {
-    if (attachment) { toast('小说阅读会话暂不支持发送图片'); return; }
-    novelSend(text);
+  const room = state.curInfo?.kind === 1;
+  if (!room && !state.target) { toast('请先在左下角选择一个模型'); return; }
+  if (state.target?.custom) {
+    const targetID = state.target.id;
+    const initialConv = state.cur;
+    state.sending = true;
+    btnSend.disabled = true;
+    try {
+      const imageID = attachment ? await uploadImage(attachment.blob) : '';
+      if (state.cur !== initialConv || state.target?.id !== targetID) {
+        throw new Error('发送期间切换了会话，请重新发送');
+      }
+      await novelSend(text, imageID);
+      if (attachment === state.attachment) removeAttachment();
+    } catch (e) { toast(e.message); }
+    finally { state.sending = false; updateSendButton(); }
     return;
   }
-  const targetID = state.target.id;
+  const targetID = state.target ? state.target.id : '';
   const initialConv = state.cur;
   state.sending = true;
   btnSend.disabled = true;
@@ -1261,7 +1391,7 @@ async function send() {
       throw new Error('发送期间切换了会话，请重新发送');
     }
     const payload = { text, imageID };
-    if (state.cur && state.curInfo?.peer_id === targetID) {
+    if (room || (state.cur && state.curInfo?.peer_id === targetID)) {
       if (state.wsConv === state.cur && state.ws?.readyState === 1) doSend(payload);
       else state.pendingSend = { convID: state.cur, payload };
     } else {
@@ -1320,6 +1450,7 @@ async function suggestName() {
 }
 
 function bind() {
+  const msgSearchInput = $('#msgSearch');
   $('#tabLogin').onclick = () => switchTab(true);
   $('#tabRegister').onclick = () => { switchTab(false); if (!$('#regName').value) suggestName(); };
   $('#btnRerollName').onclick = suggestName;
@@ -1361,6 +1492,27 @@ function bind() {
     api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
     resetUnread();
     doLogoutLocal();
+  };
+
+  $('#btnSettings').onclick = () => {
+    const root = $('#modalRoot'); root.replaceChildren();
+    const overlay = document.createElement('div'); overlay.className = 'overlay';
+    const panel = document.createElement('div'); panel.className = 'modal';
+    const title = document.createElement('h3'); title.textContent = '个人设置';
+    const toggle = document.createElement('button'); toggle.type = 'button';
+    toggle.className = 'model-item';
+    const render = () => { toggle.textContent = '消息提示音：' + (localStorage.getItem('cngp_sound') === '1' ? '开启' : '关闭'); };
+    toggle.onclick = () => {
+      const enabled = localStorage.getItem('cngp_sound') !== '1';
+      localStorage.setItem('cngp_sound', enabled ? '1' : '0');
+      if (enabled) playNotifySound();
+      render();
+    };
+    render();
+    const done = document.createElement('button'); done.type = 'button'; done.className = 'btn-primary'; done.textContent = '完成';
+    done.onclick = () => root.replaceChildren();
+    panel.append(title, toggle, done); overlay.appendChild(panel); root.appendChild(overlay);
+    overlay.onclick = e => { if (e.target === overlay) root.replaceChildren(); };
   };
 
   $('#btnToggleSide').onclick = () => {
@@ -1406,6 +1558,13 @@ function bind() {
     if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
   });
 
+  msgSearchInput.addEventListener('input', () => {
+    if (!msgSearchInput.value.trim()) { searchHits = null; renderConvList(); }
+  });
+  msgSearchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); runMessageSearch(); }
+  });
+
   btnSend.onclick = send;
   $('.composer').addEventListener('paste', e => {
     const data = e.clipboardData;
@@ -1436,8 +1595,6 @@ function bind() {
 
 async function init() {
   bind();
-  document.addEventListener('pointerdown', unlockNotificationSound, { once: true });
-  document.addEventListener('keydown', unlockNotificationSound, { once: true });
   state.baseTitle = document.title;
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {

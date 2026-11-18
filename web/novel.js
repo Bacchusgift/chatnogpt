@@ -77,7 +77,7 @@ function novelSelect(m) {
   box.appendChild(controls);
   if (m.url && new URL(m.url).hostname === 'fanqienovel.com') novelReaderPanel(box, m);
   for (const item of novelHistory[m.id] || []) {
-    if (item.own) appendOwn(item.text, item.ts);
+    if (item.own) appendOwn(item.text, item.ts, null, item.imageID);
     else novelReply(m, item.text, item.ts, item.fontURL);
   }
   renderConvList(); scrollBottom(true);
@@ -317,13 +317,15 @@ function novelRemember(m, item) {
   novelSave();
 }
 
-async function novelSend(text) {
+async function novelSend(text, imageID = '') {
   const m = novelModels.find(x => x.id === state.target.id);
   if (!m) return;
   if (state.cur !== 'novel:' + m.id) novelSelect(m);
   input.value = ''; autoGrow(); btnSend.disabled = true;
   const ts = Math.floor(Date.now() / 1000);
-  appendOwn(text, ts); novelRemember(m, { own: true, text, ts });
+  appendOwn(text, ts, null, imageID); novelRemember(m, { own: true, text, ts, imageID });
+  scrollFollow();
+  if (!text) return;
   if (m.url) {
     if (new URL(m.url).hostname === 'fanqienovel.com') {
       const op = /^(上一章|上章)$/.test(text) ? 'previous' : /^(下一章|下章)$/.test(text) ? 'next' : 'attach';
@@ -345,7 +347,7 @@ async function novelSend(text) {
 
 function novelAddFanqieControls(box, m) {
   const hint = document.createElement('div'); hint.className = 'novel-hint';
-  hint.textContent = '你正在和 ' + m.name + ' 对话';
+  hint.textContent = '你正在和 ' + m.name + ' 智能 Agent 对话';
   box.appendChild(hint);
 }
 
@@ -370,7 +372,7 @@ function novelAddToMenu(menu) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'model-item';
     const title = document.createElement('div'); title.className = 'm-name'; title.textContent = m.name;
     const desc = document.createElement('div'); desc.className = 'm-desc';
-    desc.textContent = m.url ? '自定义阅读模型' : 'TXT 阅读模型';
+    desc.textContent = '智能 Agent';
     b.append(title, desc); b.onclick = () => { novelSelect(m); closeModelMenu(); };
     menu.appendChild(b);
   }
@@ -385,9 +387,9 @@ function novelCreateModal() {
   const form = document.createElement('form'); form.className = 'modal';
   const h = document.createElement('h3'); h.textContent = '添加自定义模型';
   const sub = document.createElement('p'); sub.className = 'modal-sub';
-  sub.textContent = '填写名称和番茄小说链接；不填链接可稍后上传 TXT。';
-  const name = document.createElement('input'); name.placeholder = '模型名称'; name.maxLength = 40; name.required = true;
-  const url = document.createElement('input'); url.placeholder = '小说链接（可选）'; url.type = 'url';
+  sub.textContent = '填写模型名称 Key 和模型链接；链接可稍后补充。';
+  const name = document.createElement('input'); name.placeholder = '模型名称 Key'; name.setAttribute('aria-label', '模型名称 Key'); name.maxLength = 40; name.required = true;
+  const url = document.createElement('input'); url.placeholder = '模型链接（可选）'; url.setAttribute('aria-label', '模型链接'); url.type = 'url';
   const actions = document.createElement('div'); actions.className = 'modal-actions';
   const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
   cancel.onclick = () => { root.innerHTML = ''; };

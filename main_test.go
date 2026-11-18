@@ -6,21 +6,65 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+// testDSN resolves the MySQL DSN used by tests: CHATNOGPT_TEST_DSN env or
+// data/conf/chatnogpt_test.env (gitignored). Tests skip without either.
+func testDSN(t *testing.T) string {
+	t.Helper()
+	if dsn := os.Getenv("CHATNOGPT_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	if b, err := os.ReadFile(filepath.Join("data", "conf", "chatnogpt_test.env")); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if v, ok := strings.CutPrefix(line, "CHATNOGPT_TEST_DSN="); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
+}
+
+func openTestStore(t *testing.T) Store {
+	t.Helper()
+	if dsn := testDSN(t); dsn != "" {
+		st, err := OpenStore(dsn, t.TempDir())
+		if err != nil {
+			t.Fatalf("open database store: %v", err)
+		}
+		t.Cleanup(func() { st.Close() })
+		return st
+	}
+	st, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open file store: %v", err)
+	}
+	return st
+}
+
+func testStore(t *testing.T) Store {
+	t.Helper()
+	st := openTestStore(t)
+	if err := st.Fresh(); err != nil {
+		t.Fatalf("fresh db: %v", err)
+	}
+	return st
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	st, err := LoadStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("load store: %v", err)
-	}
+	st := testStore(t)
 	ts := httptest.NewServer(buildMux(newServer(st)))
 	t.Cleanup(ts.Close)
 	return ts
@@ -330,7 +374,8 @@ func TestModelRegisterAndConvWith(t *testing.T) {
 	}
 
 	// picking yourself is rejected
-	sc, _ := doJSON(t, "POST", ts.URL+"/api/conversations/with", tokenA, map[string]any{"peer_id": user["id"].(string)})
+	sc, selfResp := doJSON(t, "POST", ts.URL+"/api/conversations/with", tokenA, map[string]any{"peer_id": user["id"].(string)})
+	t.Logf("DEBUG self: sc=%d resp=%v userID=%v", sc, selfResp, user["id"])
 	if sc == http.StatusOK {
 		t.Fatal("self peer should be rejected")
 	}
@@ -477,10 +522,7 @@ func TestCoverLinesEndpoint(t *testing.T) {
 }
 
 func TestBuiltinCoverLines(t *testing.T) {
-	st, err := LoadStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := testStore(t)
 	lines := newServer(st).cover.Lines()
 	if len(lines) < 10 {
 		t.Fatalf("pool too small: %d", len(lines))
@@ -488,5 +530,55 @@ func TestBuiltinCoverLines(t *testing.T) {
 	lines[0] = "modified"
 	if newServer(st).cover.Lines()[0] != builtinCoverLines[0] {
 		t.Fatal("cover lines must be isolated from callers")
+	}
+}
+
+func TestSearchMessages(t *testing.T) {
+	if testDSN(t) == "" {
+		st, err := OpenFileStore(t.TempDir())
+		if err != nil { t.Fatal(err) }
+		if _, err := st.SearchMessages("x", "y", 5); !errors.Is(err, ErrNoDatabase) {
+			t.Fatalf("file search err = %v", err)
+		}
+		return
+	}
+	st := testStore(t)
+	a, _, err := st.Register("search-a", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := st.Register("search-b", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := st.NewConvWith(a.ID, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddMessage(conv.ID, b.ID, "search-b", "数据库里藏着一个独特关键词斑马象", ""); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := st.SearchMessages(a.ID, "斑马象", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ConvID != conv.ID || !strings.Contains(hits[0].Message.Content, "斑马象") {
+		t.Fatalf("hits = %+v", hits)
+	}
+	outsider, _, err := st.Register("search-c", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits, _ := st.SearchMessages(outsider.ID, "斑马象", 10); len(hits) != 0 {
+		t.Fatal("outsider should not see other conversations")
+	}
+
+	// 文件后端不支持搜索：应明确返回 ErrNoDatabase
+	fileStore, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileStore.SearchMessages("x", "y", 5); err == nil || !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("file search err = %v", err)
 	}
 }

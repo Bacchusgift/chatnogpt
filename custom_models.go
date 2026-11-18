@@ -18,16 +18,11 @@ func (s *server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		s.store.mu.Lock()
-		models := []CustomModel{}
-		for _, m := range s.store.d.CustomModels {
-			if m.OwnerID == u.ID {
-				copy := *m
-				copy.Text = ""
-				models = append(models, copy)
-			}
+		models, err := s.store.ListCustomModels(u.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
 		}
-		s.store.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"models": models})
 	case http.MethodPost:
 		var req struct {
@@ -51,11 +46,11 @@ func (s *server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		m := &CustomModel{ID: newID(), OwnerID: u.ID, Name: req.Name, URL: req.URL, CreatedAt: now()}
-		s.store.mu.Lock()
-		s.store.d.CustomModels[m.ID] = m
-		s.store.saveLocked()
-		s.store.mu.Unlock()
+		m, err := s.store.CreateCustomModel(u.ID, req.Name, req.URL)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"model": m})
 	default:
 		writeErr(w, 405, errors.New("method not allowed"))
@@ -70,18 +65,16 @@ func (s *server) handleCustomModelSub(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/custom-models/"), "/")
 	parts := strings.Split(rest, "/")
-	if len(parts) == 2 && parts[1] == "next" && r.Method == http.MethodPost {
-		s.handleCustomNext(w, u.ID, parts[0])
+	if len(parts) != 2 {
+		http.NotFound(w, r)
 		return
 	}
-	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
-	m := s.store.d.CustomModels[parts[0]]
-	if m == nil || m.OwnerID != u.ID {
-		writeErr(w, 404, ErrNotFound)
+	modelID := parts[0]
+	if parts[1] == "next" && r.Method == http.MethodPost {
+		s.handleCustomNext(w, u.ID, modelID)
 		return
 	}
-	if len(parts) == 2 && parts[1] == "text" && r.Method == http.MethodPut {
+	if parts[1] == "text" && r.Method == http.MethodPut {
 		var req struct {
 			Text string `json:"text"`
 		}
@@ -93,61 +86,65 @@ func (s *server) handleCustomModelSub(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, errors.New("TXT 文件需为 UTF-8 编码且不超过 2 MB"))
 			return
 		}
-		m.Text = req.Text
-		m.Position = 0
-		s.store.saveLocked()
+		if err := s.store.SaveCustomModelText(modelID, u.ID, req.Text); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
 		writeJSON(w, 200, map[string]any{"ok": true})
 		return
 	}
 	http.NotFound(w, r)
 }
 
+// chunkBoundary picks the end offset for a reading chunk of about target
+// runes, rewinding to a paragraph break when one is nearby.
+func chunkBoundary(runes []rune, start, target int) int {
+	end := start + target
+	if end > len(runes) {
+		end = len(runes)
+	}
+	if end < len(runes) {
+		for i := end; i > start+target/2; i-- {
+			if runes[i-1] == '\n' {
+				end = i
+				break
+			}
+		}
+	}
+	return end
+}
+
 func (s *server) handleCustomNext(w http.ResponseWriter, ownerID, modelID string) {
-	s.store.mu.Lock()
-	m := s.store.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		s.store.mu.Unlock()
-		writeErr(w, 404, ErrNotFound)
+	m, err := s.store.GetCustomModel(modelID, ownerID)
+	if err != nil {
+		writeErr(w, statusOf(err), err)
 		return
 	}
 	if m.URL == "" {
 		if m.Text == "" {
-			s.store.mu.Unlock()
 			writeErr(w, 400, errors.New("请先上传 TXT 文件"))
 			return
 		}
 		runes := []rune(m.Text)
-		if m.Position >= len(runes) {
-			s.store.mu.Unlock()
+		if int(m.Position) >= len(runes) {
 			writeJSON(w, 200, map[string]any{"content": "已读完", "done": true})
 			return
 		}
-		end := m.Position + 800
-		if end > len(runes) {
-			end = len(runes)
-		}
-		if end < len(runes) {
-			for i := end; i > m.Position+400; i-- {
-				if runes[i-1] == '\n' {
-					end = i
-					break
-				}
-			}
-		}
+		end := chunkBoundary(runes, int(m.Position), 800)
 		content := strings.TrimSpace(string(runes[m.Position:end]))
-		m.Position = end
-		s.store.saveLocked()
-		s.store.mu.Unlock()
+		if err := s.store.SaveCustomModelPosition(modelID, ownerID, int64(end)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, 200, map[string]any{"content": content, "done": end == len(runes)})
 		return
 	}
-	source, chapterID, offset := m.URL, m.ChapterID, m.ChapterOffset
-	s.store.mu.Unlock()
-	kind, bookOrChapterID, err := fanqieSource(source)
+	kind, bookOrChapterID, err := fanqieSource(m.URL)
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	chapterID, offset := m.ChapterID, int(m.ChapterOffset)
 	if chapterID == "" {
 		if kind == "reader" {
 			chapterID = bookOrChapterID
@@ -211,26 +208,11 @@ func (s *server) handleCustomNext(w http.ResponseWriter, ownerID, modelID string
 		}
 		runes = []rune(content)
 	}
-	end := offset + 800
-	if end > len(runes) {
-		end = len(runes)
-	}
-	if end < len(runes) {
-		for i := end; i > offset+400; i-- {
-			if runes[i-1] == '\n' {
-				end = i
-				break
-			}
-		}
-	}
+	end := chunkBoundary(runes, offset, 800)
 	chunk := strings.TrimSpace(string(runes[offset:end]))
-	s.store.mu.Lock()
-	m = s.store.d.CustomModels[modelID]
-	if m != nil && m.OwnerID == ownerID {
-		m.ChapterID = chapterID
-		m.ChapterOffset = end
-		s.store.saveLocked()
+	if err := s.store.SaveCustomModelProgress(modelID, ownerID, chapterID, int64(end)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
-	s.store.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"content": chunk, "chapter_id": chapterID, "done": false})
 }

@@ -4,7 +4,7 @@ import "testing"
 
 func TestUnreadCountPerRecipientPersists(t *testing.T) {
 	dir := t.TempDir()
-	s, err := LoadStore(dir)
+	s, err := OpenFileStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestUnreadCountPerRecipientPersists(t *testing.T) {
 	if _, err := s.AddMessage(conv.ID, a.ID, a.Nickname, "reply", ""); err != nil {
 		t.Fatal(err)
 	}
-	check := func(store *Store, userID string, want int) {
+	check := func(store Store, userID string, want int) {
 		t.Helper()
 		convs := store.ListConvs(userID)
 		if len(convs) != 1 || convs[0].UnreadCount != want {
@@ -42,7 +42,7 @@ func TestUnreadCountPerRecipientPersists(t *testing.T) {
 	}
 	check(s, a.ID, 0)
 	check(s, b.ID, 1)
-	reloaded, err := LoadStore(dir)
+	reloaded, err := OpenFileStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

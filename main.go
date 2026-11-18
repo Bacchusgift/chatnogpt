@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -103,20 +104,23 @@ func frontendForRequest(r *http.Request) fs.FS {
 }
 
 type server struct {
-	store *Store
+	store Store
 	hub   *hub
 	cover *coverStore
 }
 
-func newServer(st *Store) *server {
+func newServer(st Store) *server {
 	return &server{store: st, hub: newHub(), cover: &coverStore{lines: builtinCoverLines}}
 }
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
-	dataDir := flag.String("data", "data", "data directory (data.json lives here)")
+	dataDir := flag.String("data", "data", "data directory (images live here)")
 	sitesCfg := flag.String("sites", "sites.json", "optional JSON file mapping hostnames to site dirs (see sites.example.json); empty to disable")
 	open := flag.Bool("open", true, "open the browser automatically on start")
+	dbDsn := flag.String("db-dsn", "", "MariaDB DSN; falls back to CHATNOGPT_DB_DSN env")
+	freshDB := flag.Bool("fresh-db", false, "empty all database tables on start (tests only)")
+	migrateFrom := flag.String("migrate-from", "", "import a legacy data.json store into the database, then exit")
 	flag.Parse()
 	loadSiteOverrides(*sitesCfg)
 
@@ -126,9 +130,44 @@ func main() {
 	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
 	_ = mime.AddExtensionType(".svg", "image/svg+xml")
 
-	store, err := LoadStore(*dataDir)
-	if err != nil {
-		log.Fatalf("load store: %v", err)
+	var store Store
+	var err error
+	dsn := *dbDsn
+	if dsn == "" {
+		dsn = os.Getenv("CHATNOGPT_DB_DSN")
+	}
+	if dsn != "" {
+		store, err = OpenStore(dsn, *dataDir)
+		if err != nil {
+			log.Fatalf("open database store: %v", err)
+		}
+		if *freshDB {
+			if err := store.Fresh(); err != nil {
+				log.Fatalf("fresh db: %v", err)
+			}
+		}
+		if *migrateFrom != "" {
+			if err := migrateFromJSON(*migrateFrom, store.(*dbStore).DB()); err != nil {
+				log.Fatalf("migrate %s: %v", *migrateFrom, err)
+			}
+			log.Printf("migrated %s into the database", *migrateFrom)
+			return
+		}
+		log.Printf("database storage enabled (MariaDB/MySQL)")
+	} else {
+		if *migrateFrom != "" {
+			log.Fatal("-migrate-from 需要数据库模式：用 -db-dsn 或 CHATNOGPT_DB_DSN 提供连接")
+		}
+		store, err = OpenFileStore(*dataDir)
+		if err != nil {
+			log.Fatalf("open file store: %v", err)
+		}
+		if *freshDB {
+			if err := store.Fresh(); err != nil {
+				log.Fatalf("fresh data: %v", err)
+			}
+		}
+		log.Printf("no database configured - using local file storage (%s)", filepath.Join(*dataDir, "data.json"))
 	}
 	srv := newServer(store)
 
@@ -177,6 +216,8 @@ func buildMux(s *server) http.Handler {
 	mux.HandleFunc("/api/custom-models/", s.handleCustomModelSub)
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
 	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
+	mux.HandleFunc("/api/rooms", s.handleRooms)
+	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/conversations/join", s.handleJoinConv)
 	mux.HandleFunc("/api/conversations/with", s.handleConvWith)
 	mux.HandleFunc("/api/conversations/new", s.handleConvNew)

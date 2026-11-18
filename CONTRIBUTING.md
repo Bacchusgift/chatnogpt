@@ -8,13 +8,29 @@
 
 ## 本地启动
 
-要求 Go 1.21 或更新版本。仓库没有 Go 第三方依赖。
+要求 Go 1.21 或更新版本。Go 依赖只有纯 Go 的 MySQL 驱动（`go-sql-driver/mysql`）。
+
+**默认使用文件存储**（数据目录下的 `data.json`），零配置即可运行：
 
 ```sh
 git clone https://gitee.com/bacchusgift/chatnogpt.git
 cd chatnogpt
 go run . -addr 127.0.0.1:8080 -data data -open=false
 ```
+
+可选启用 MariaDB/MySQL（解锁消息搜索等能力，适合长期运行）：用 `-db-dsn` 或
+环境变量 `CHATNOGPT_DB_DSN` 提供连接，首次启动自动建表；图片文件仍保存在
+`-data` 目录下的 `images/`：
+
+```sh
+export CHATNOGPT_DB_DSN="chatnogpt_dev:密码@tcp(你的数据库主机:3306)/chatnogpt_dev?charset=utf8mb4"
+go run . -addr 127.0.0.1:8080 -data data -open=false
+```
+
+`go test` 默认用文件后端；配置 `CHATNOGPT_TEST_DSN`（或 `data/conf/chatnogpt_test.env`，
+该目录已被 gitignore）后会改用测试数据库，数据库路径的用例才会执行。
+提交 PR 前请运行 `go vet ./...`、`go test ./...`、`node --check web/app.js`。
+不要把任何含密码的连接串提交到仓库。
 
 Windows PowerShell 将最后一行改为：
 
