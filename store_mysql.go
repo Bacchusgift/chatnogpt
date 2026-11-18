@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 // Store backs every API/WS handler with MariaDB. Image files stay on disk
@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS conv_members (
   user_id CHAR(12) NOT NULL,
   title VARCHAR(120) NOT NULL DEFAULT '',
   joined_at BIGINT NOT NULL,
+  unread_count INT NOT NULL DEFAULT 0,
   PRIMARY KEY (conv_id, user_id),
   KEY idx_cm_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -109,6 +110,12 @@ func newDBStore(dsn, dir string) (*dbStore, error) {
 			return nil, fmt.Errorf("初始化表结构: %w", err)
 		}
 	}
+	// Existing databases predate unread_count; a duplicate-column error means
+	// the migration has already been applied.
+	if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN unread_count INT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
+		db.Close()
+		return nil, fmt.Errorf("初始化未读计数: %w", err)
+	}
 	return &dbStore{db: db, dir: dir}, nil
 }
 
@@ -151,9 +158,9 @@ func nullStr(v string) any {
 }
 
 func sqlErrCode(err error) uint16 {
-	var myErr interface{ ErrorNumber() uint16 }
+	var myErr *mysql.MySQLError
 	if errors.As(err, &myErr) {
-		return myErr.ErrorNumber()
+		return myErr.Number
 	}
 	return 0
 }
@@ -399,7 +406,7 @@ func (s *dbStore) peerOf(convID, userID string, memberCount int) (string, string
 }
 
 func (s *dbStore) ListConvs(userID string) []convSummary {
-	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at,
+	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at, cm.unread_count,
 		COALESCE((SELECT MAX(m.ts) FROM messages m WHERE m.conv_id=c.id), 0) AS last_ts,
 		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id) AS member_count
 		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=?`, userID)
@@ -409,18 +416,18 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 	defer rows.Close()
 	out := []convSummary{}
 	type row0 struct {
-		id, title, code   string
-		kind              int
-		createdAt, lastTS int64
-		memberCount       int
+		id, title, code          string
+		kind                     int
+		createdAt, lastTS        int64
+		memberCount, unreadCount int
 	}
 	for rows.Next() {
 		var r row0
-		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.lastTS, &r.memberCount); err != nil {
+		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.unreadCount, &r.lastTS, &r.memberCount); err != nil {
 			continue
 		}
 		out = append(out, convSummary{ID: r.id, Title: r.title, Code: r.code, Kind: r.kind,
-			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS})
+			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS, UnreadCount: r.unreadCount})
 	}
 	for i := range out {
 		out[i].PeerID, out[i].PeerNickname = s.peerOf(out[i].ID, userID, out[i].MemberCount)
@@ -432,6 +439,27 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 		return out[i].CreatedAt > out[j].CreatedAt
 	})
 	return out
+}
+
+func (s *dbStore) MarkConvRead(convID, userID string) error {
+	result, err := s.db.Exec("UPDATE conv_members SET unread_count=0 WHERE conv_id=? AND user_id=?", convID, userID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		var exists int
+		if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?", convID, userID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // GetConv only checks membership; details come from ConvDetail.
@@ -635,6 +663,9 @@ func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clien
 		}
 		return nil, err
 	}
+	if _, err := s.db.Exec("UPDATE conv_members SET unread_count=unread_count+1 WHERE conv_id=? AND user_id<>?", convID, senderID); err != nil {
+		return nil, err
+	}
 	// 与旧版一致：每个会话最多保留 5000 条消息
 	s.db.Exec(`DELETE m FROM messages m JOIN
 		(SELECT ts FROM messages WHERE conv_id=? ORDER BY ts DESC, id DESC LIMIT 1 OFFSET 5000) old
@@ -802,6 +833,19 @@ func (s *dbStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error) 
 	}
 	m.Text = text.String
 	return &m, nil
+}
+
+func (s *dbStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
+	m, err := s.GetCustomModel(modelID, ownerID)
+	if err != nil {
+		return err
+	}
+	if m.URL == modelURL {
+		return nil
+	}
+	_, err = s.db.Exec(`UPDATE custom_models SET url=?, position=0, chapter_id='', chapter_offset=0
+		WHERE id=? AND owner_id=?`, modelURL, modelID, ownerID)
+	return err
 }
 
 // SaveCustomModelText stores a fresh TXT body and rewinds the position.

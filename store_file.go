@@ -348,7 +348,7 @@ func (s *fileStore) ListConvs(userID string) []convSummary {
 		}
 		out = append(out, convSummary{
 			ID: c.ID, Title: m.Title, Code: c.Code, Kind: c.Kind,
-			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last,
+			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last, UnreadCount: m.UnreadCount,
 			PeerID: peerID, PeerNickname: peerNick,
 		})
 	}
@@ -359,6 +359,24 @@ func (s *fileStore) ListConvs(userID string) []convSummary {
 		return out[i].CreatedAt > out[j].CreatedAt
 	})
 	return out
+}
+
+func (s *fileStore) MarkConvRead(convID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return ErrNotFound
+	}
+	m, ok := c.Members[userID]
+	if !ok {
+		return ErrForbidden
+	}
+	if m.UnreadCount != 0 {
+		m.UnreadCount = 0
+		s.saveLocked()
+	}
+	return nil
 }
 
 // GetConv only checks membership; details come from ConvDetail.
@@ -568,6 +586,11 @@ func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, cli
 		}
 	}
 	c.Messages = append(c.Messages, m)
+	for userID, member := range c.Members {
+		if userID != senderID {
+			member.UnreadCount++
+		}
+	}
 	const maxHistory = 5000
 	if len(c.Messages) > maxHistory {
 		c.Messages = c.Messages[len(c.Messages)-maxHistory:]
@@ -721,6 +744,24 @@ func (s *fileStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error
 	}
 	copyM := *m
 	return &copyM, nil
+}
+
+func (s *fileStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.d.CustomModels[modelID]
+	if m == nil || m.OwnerID != ownerID {
+		return ErrNotFound
+	}
+	if m.URL == modelURL {
+		return nil
+	}
+	m.URL = modelURL
+	m.Position = 0
+	m.ChapterID = ""
+	m.ChapterOffset = 0
+	s.saveLocked()
+	return nil
 }
 
 func (s *fileStore) SaveCustomModelText(modelID, ownerID, text string) error {

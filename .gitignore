@@ -16,3 +16,4 @@ HANDOFF.md
 # Python 部署脚本缓存
 deploy/__pycache__/
 *.pyc
+.idea/

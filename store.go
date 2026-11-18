@@ -29,9 +29,10 @@ type User struct {
 }
 
 type Member struct {
-	UserID   string `json:"user_id"`
-	Title    string `json:"title"` // 每个成员给会话自己取的名字
-	JoinedAt int64  `json:"joined_at"`
+	UserID      string `json:"user_id"`
+	Title       string `json:"title"` // 每个成员给会话自己取的名字
+	JoinedAt    int64  `json:"joined_at"`
+	UnreadCount int    `json:"unread_count,omitempty"`
 }
 
 type Message struct {
@@ -69,6 +70,7 @@ type convSummary struct {
 	MemberCount  int    `json:"member_count"`
 	CreatedAt    int64  `json:"created_at"`
 	LastTS       int64  `json:"last_ts"`
+	UnreadCount  int    `json:"unread_count"`
 	PeerID       string `json:"peer_id,omitempty"`
 	PeerNickname string `json:"peer_nickname,omitempty"`
 }
@@ -133,6 +135,7 @@ type Store interface {
 	CreateConv(u *User, title string) convBrief
 	JoinConv(u *User, code, title string) (convBrief, error)
 	ListConvs(userID string) []convSummary
+	MarkConvRead(convID, userID string) error
 	GetConv(convID, userID string) (*Conv, error)
 	ConvDetail(convID, userID string) (convOut, error)
 	NewConvWith(aID, bID string) (convBrief, error)
@@ -150,6 +153,7 @@ type Store interface {
 	CreateCustomModel(ownerID, name, url string) (CustomModel, error)
 	ListCustomModels(ownerID string) ([]CustomModel, error)
 	GetCustomModel(modelID, ownerID string) (*CustomModel, error)
+	SaveCustomModelURL(modelID, ownerID, modelURL string) error
 	SaveCustomModelText(modelID, ownerID, text string) error
 	SaveCustomModelPosition(modelID, ownerID string, position int64) error
 	SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error

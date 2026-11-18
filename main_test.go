@@ -534,6 +534,16 @@ func TestBuiltinCoverLines(t *testing.T) {
 }
 
 func TestSearchMessages(t *testing.T) {
+	if testDSN(t) == "" {
+		st, err := OpenFileStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.SearchMessages("x", "y", 5); !errors.Is(err, ErrNoDatabase) {
+			t.Fatalf("file search err = %v", err)
+		}
+		return
+	}
 	st := testStore(t)
 	a, _, err := st.Register("search-a", "password123")
 	if err != nil {

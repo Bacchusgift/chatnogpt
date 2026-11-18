@@ -1,12 +1,16 @@
 'use strict';
 
-if (location.port === '8080') {
+const chatPageAllowed = location.origin === 'https://chatnogpt.autowired.cn' ||
+  ((location.hostname === '127.0.0.1' || location.hostname === 'localhost') &&
+    location.protocol === 'http:' && location.port === '8080');
+
+if (chatPageAllowed) {
   document.documentElement.dataset.cngpReaderBridge = 'ready';
   window.postMessage({ channel: 'cngp-reader-ready' }, location.origin);
 }
 
 window.addEventListener('message', event => {
-  if (location.port !== '8080' || event.source !== window || event.origin !== location.origin) return;
+  if (!chatPageAllowed || event.source !== window || event.origin !== location.origin) return;
   const data = event.data;
   if (!data || data.channel !== 'cngp-reader-request' ||
       typeof data.id !== 'string' || !['attach', 'refresh', 'next', 'previous'].includes(data.op)) return;
