@@ -1,0 +1,406 @@
+'use strict';
+
+// 浏览器扩展只读取用户已登录的番茄章节。登录凭据始终留在番茄网站。
+let novelModels = [];
+let novelHistory = {};
+let novelChapters = {};
+const novelFontCache = new Map();
+const novelBridgePending = new Map();
+let novelRevealShape = localStorage.getItem('cngp_reveal_shape') === 'rect' ? 'rect' : 'circle';
+let novelRevealWidth = Math.max(80, Math.min(700, Number(localStorage.getItem('cngp_reveal_width')) || 300));
+let novelRevealHeight = Math.max(80, Math.min(700, Number(localStorage.getItem('cngp_reveal_height')) || 195));
+let novelBridgeAvailable = false;
+
+window.addEventListener('message', event => {
+  if (event.source !== window || event.origin !== location.origin) return;
+  if (event.data?.channel === 'cngp-reader-ready') { novelBridgeAvailable = true; return; }
+  if (event.data?.channel !== 'cngp-reader-response') return;
+  novelBridgeAvailable = true;
+  const pending = novelBridgePending.get(event.data.id);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  novelBridgePending.delete(event.data.id);
+  pending.resolve(event.data.response);
+});
+
+async function novelLoad() {
+  try {
+    const d = await api('/api/custom-models');
+    novelModels = d.models || [];
+    try { novelHistory = JSON.parse(localStorage.getItem('cngp_novel_history_' + state.me.id) || '{}'); } catch { novelHistory = {}; }
+    try { novelChapters = JSON.parse(localStorage.getItem('cngp_novel_chapters_' + state.me.id) || '{}'); } catch { novelChapters = {}; }
+    renderConvList();
+  } catch (e) { toast(e.message); }
+}
+
+function novelSave() {
+  try {
+    localStorage.setItem('cngp_novel_history_' + state.me.id, JSON.stringify(novelHistory));
+    localStorage.setItem('cngp_novel_chapters_' + state.me.id, JSON.stringify(novelChapters));
+  } catch { toast('浏览器存储空间不足，请减少已导入的章节'); }
+}
+
+function novelRenderList(list) {
+  for (const m of novelModels) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'conv-item' + (state.cur === 'novel:' + m.id ? ' active' : '');
+    b.textContent = m.name;
+    b.onclick = () => { novelSelect(m); closeSidebarMobile(); };
+    list.appendChild(b);
+  }
+}
+
+function novelSelect(m) {
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  state.cur = 'novel:' + m.id;
+  state.gen++; state.queue = []; state.animating = false;
+  state.thinkingRow = null;
+  hideTyping();
+  state.curInfo = null;
+  state.lastRenderTS = 0;
+  $('#btnRenameConv').classList.add('hidden');
+  setTarget(m);
+  state.target.custom = true;
+  $('#convTitle').textContent = m.name;
+  const box = $('#messages'); box.innerHTML = '';
+  const controls = document.createElement('div'); controls.className = 'novel-controls';
+  if (m.url && new URL(m.url).hostname === 'fanqienovel.com') {
+    novelAddFanqieControls(controls, m);
+  } else if (m.url) {
+    const link = document.createElement('a'); link.href = m.url;
+    link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '打开来源 ↗';
+    controls.appendChild(link);
+  } else {
+    const upload = document.createElement('button'); upload.type = 'button'; upload.textContent = '上传 TXT';
+    upload.onclick = () => novelUploadTXT(m); controls.appendChild(upload);
+  }
+  box.appendChild(controls);
+  if (m.url && new URL(m.url).hostname === 'fanqienovel.com') novelReaderPanel(box, m);
+  for (const item of novelHistory[m.id] || []) {
+    if (item.own) appendOwn(item.text, item.ts);
+    else novelReply(m, item.text, item.ts, item.fontURL);
+  }
+  renderConvList(); scrollBottom(true);
+}
+
+function novelBridgeRequest(op, m) {
+  return new Promise(resolve => {
+    const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+    const timer = setTimeout(() => {
+      novelBridgePending.delete(id);
+      const injected = document.documentElement.dataset.cngpReaderBridge === 'ready';
+      resolve({ error: injected
+        ? '扩展脚本已进入聊天页，但后台没有响应；请打开扩展管理页的“错误”查看详情。'
+        : '扩展脚本尚未进入聊天页；请重新加载扩展并强制刷新聊天页（⌘⇧R）。' });
+    }, novelBridgeAvailable ? 20000 : 2500);
+    novelBridgePending.set(id, { resolve, timer });
+    window.postMessage({ channel: 'cngp-reader-request', id, op, url: m.url }, location.origin);
+  });
+}
+
+function novelReaderPanel(box, m) {
+  const panel = document.createElement('section'); panel.className = 'novel-browser'; panel.dataset.modelId = m.id;
+  const toolbar = document.createElement('div'); toolbar.className = 'novel-browser-toolbar';
+  const title = document.createElement('strong'); title.className = 'novel-browser-title'; title.textContent = '浏览器预览';
+  const previous = document.createElement('button'); previous.type = 'button'; previous.textContent = '上一章';
+  previous.onclick = () => novelReaderControl('previous', m);
+  const next = document.createElement('button'); next.type = 'button'; next.textContent = '下一章';
+  next.onclick = () => novelReaderControl('next', m);
+  const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = '连接 / 刷新';
+  refresh.onclick = () => novelReaderControl('attach', m);
+  const source = document.createElement('a'); source.href = m.url; source.target = '_blank';
+  source.rel = 'noopener noreferrer'; source.textContent = '在浏览器中打开 ↗';
+  toolbar.append(title, previous, next, refresh, source);
+  const status = document.createElement('div'); status.className = 'novel-browser-status';
+  status.textContent = '点击“连接 / 刷新”，读取已登录的番茄标签页。';
+  const content = document.createElement('article'); content.className = 'novel-browser-content';
+  panel.append(toolbar, status, content);
+  novelCoverSetup(panel);
+  box.appendChild(panel);
+  const saved = novelChapters[m.id];
+  if (saved?.text) novelReaderRender(m, saved, false);
+}
+
+const novelScienceParagraphs = [
+  '我们每天看到的天空颜色，来自阳光与大气分子的相互作用。太阳光包含多种颜色；波长较短的蓝光更容易被空气散射，因此白天从不同方向进入眼睛的光常带有蓝色。',
+  '到了日落时，阳光穿过的大气路径变长。蓝光在途中被散射得更多，抵达观察者的直射光便更偏向橙色和红色。这也是傍晚云层常显得温暖的原因。',
+  '海洋能够储存大量热量。水的比热容较高，同样吸收一份能量时，它的温度上升幅度通常比陆地小。沿海地区因而常有较温和的昼夜与季节温差。',
+  '植物利用叶绿体进行光合作用，把光能转化为化学能。这个过程还会吸收二氧化碳并释放氧气，是许多生态系统食物和能量的起点。',
+  '人体的生物钟并不是一只真正的钟，而是一套约二十四小时循环的调节系统。光线、进食和活动时间都能影响它，所以规律作息有助于稳定睡眠节律。',
+  '声音需要介质传播。空气里的振动让我们听见说话声，水和固体也能传声；真空中缺少传递振动的粒子，因此普通声音无法穿过真空。',
+  '温度描述的是物体内部粒子运动状态的一个宏观量。热量总会自发地从高温处流向低温处，直到两者逐渐接近平衡。保温材料的作用，是放慢这一过程。',
+  '地球的四季主要由地轴倾斜造成。地球公转时，不同地区接收阳光的角度和时长发生变化。夏季白昼较长、太阳位置较高，地面获得的太阳能也更多。',
+  '互联网传输信息时，会把数据拆成许多小包。每个包带有目标地址，经过网络设备转发后在目的地重新组合。分包方式使网络能够灵活处理不同路径和负载。',
+  '科学解释通常从可检验的问题开始。提出假设后，通过观察或实验收集证据，再根据结果修正认识。一个可靠的结论，也应当经得起其他人重复检验。'
+];
+
+function novelCoverSetup(panel) {
+  const cover = document.createElement('div'); cover.className = 'novel-cover';
+  const heading = document.createElement('div'); heading.className = 'novel-cover-heading';
+  heading.textContent = '日常知识 · 科学如何解释身边的现象';
+  const intro = document.createElement('div'); intro.className = 'novel-cover-intro';
+  intro.textContent = '下面从光、声音、生命与地球环境几个角度，了解常见现象背后的原理。';
+  const body = document.createElement('div'); body.className = 'novel-cover-body';
+  for (const paragraph of novelScienceParagraphs) {
+    const p = document.createElement('p'); p.textContent = paragraph; body.appendChild(p);
+  }
+  cover.append(heading, intro, body);
+  panel.appendChild(cover);
+  const outline = document.createElement('div'); outline.className = 'novel-reveal-outline';
+  panel.appendChild(outline);
+  panel.dataset.revealShape = novelRevealShape;
+  panel.dataset.revealMode = 'setup';
+  panel.dataset.revealHasSelection = '0';
+  const setup = document.createElement('div'); setup.className = 'novel-reveal-setup';
+  const prompt = document.createElement('span'); prompt.textContent = '拖动鼠标选择透视范围';
+  const circle = document.createElement('button'); circle.type = 'button'; circle.textContent = '圆形';
+  const rect = document.createElement('button'); rect.type = 'button'; rect.textContent = '矩形';
+  const confirm = document.createElement('button'); confirm.type = 'button'; confirm.textContent = '确认'; confirm.disabled = true;
+  const chooseShape = shape => {
+    novelRevealShape = shape;
+    localStorage.setItem('cngp_reveal_shape', shape);
+    panel.dataset.revealShape = shape;
+    circle.classList.toggle('active', shape === 'circle');
+    rect.classList.toggle('active', shape === 'rect');
+  };
+  circle.onclick = () => chooseShape('circle');
+  rect.onclick = () => chooseShape('rect');
+  chooseShape(novelRevealShape);
+  confirm.onclick = () => {
+    if (panel.dataset.revealHasSelection !== '1') return;
+    panel.dataset.revealMode = 'active';
+  };
+  setup.append(prompt, circle, rect, confirm); panel.appendChild(setup);
+  let dragStart = null;
+  const position = event => {
+    const rect = panel.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    if (dragStart) {
+      const left = Math.min(x, dragStart.x), top = Math.min(y, dragStart.y);
+      const width = Math.max(40, Math.abs(x - dragStart.x));
+      const height = Math.max(40, Math.abs(y - dragStart.y));
+      novelSetReveal(panel, left + width / 2, top + height / 2,
+        novelRevealShape === 'circle' ? Math.max(width, height) : width,
+        novelRevealShape === 'circle' ? Math.max(width, height) : height);
+    } else if (panel.dataset.revealMode === 'active') {
+      novelSetReveal(panel, x, y, novelRevealWidth,
+        novelRevealShape === 'circle' ? novelRevealWidth : novelRevealHeight);
+    }
+  };
+  panel.addEventListener('pointermove', position);
+  cover.addEventListener('pointerdown', event => {
+    if (!state.coverMode || panel.dataset.revealMode !== 'setup' || event.button !== 0) return;
+    event.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    dragStart = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    panel.dataset.revealHasSelection = '1';
+    cover.setPointerCapture(event.pointerId);
+    position(event);
+  });
+  cover.addEventListener('pointerup', event => {
+    if (!dragStart) return;
+    position(event);
+    novelRevealWidth = Math.round(parseFloat(panel.style.getPropertyValue('--novel-w')) || novelRevealWidth);
+    novelRevealHeight = Math.round(parseFloat(panel.style.getPropertyValue('--novel-h')) || novelRevealHeight);
+    localStorage.setItem('cngp_reveal_width', String(novelRevealWidth));
+    localStorage.setItem('cngp_reveal_height', String(novelRevealHeight));
+    dragStart = null;
+    confirm.disabled = false;
+  });
+  cover.addEventListener('pointercancel', () => {
+    dragStart = null;
+    panel.dataset.revealHasSelection = '0';
+    confirm.disabled = true;
+  });
+  cover.addEventListener('scroll', () => {
+    const content = panel.querySelector('.novel-browser-content');
+    const limit = cover.scrollHeight - cover.clientHeight;
+    content.scrollTop = limit > 0 ? cover.scrollTop / limit * (content.scrollHeight - content.clientHeight) : 0;
+  });
+}
+
+function novelSetReveal(panel, x, y, width, height) {
+  panel.style.setProperty('--novel-fx', x + 'px');
+  panel.style.setProperty('--novel-fy', y + 'px');
+  panel.style.setProperty('--novel-w', width + 'px');
+  panel.style.setProperty('--novel-h', height + 'px');
+  panel.style.setProperty('--novel-left', (x - width / 2) + 'px');
+  panel.style.setProperty('--novel-top', (y - height / 2) + 'px');
+}
+
+function novelCoverMode(max) {
+  if (!max) return;
+  novelResetRevealSelection();
+}
+
+function novelResetRevealSelection() {
+  document.querySelectorAll('.novel-browser').forEach(panel => {
+    panel.dataset.revealMode = 'setup';
+    panel.dataset.revealHasSelection = '0';
+    panel.querySelector('.novel-reveal-setup button:last-child').disabled = true;
+    panel.querySelector('.novel-cover').scrollTop = 0;
+  });
+}
+
+async function novelReaderControl(op, m) {
+  const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
+  if (!panel) return;
+  const status = panel.querySelector('.novel-browser-status');
+  status.textContent = '正在连接番茄标签页…';
+  const result = await novelBridgeRequest(op, m);
+  if (state.cur !== 'novel:' + m.id) return;
+  if (result?.error) { status.textContent = result.error; return; }
+  if (result?.opened) { status.textContent = result.message; return; }
+  if (typeof result?.text !== 'string' || result.text.length < 100) {
+    status.textContent = '番茄标签页没有可显示的完整章节'; return;
+  }
+  novelReaderRender(m, result, true);
+}
+
+function novelReaderRender(m, chapter, save) {
+  const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
+  if (!panel) return;
+  const family = novelFontFamily(chapter.fontURL);
+  if (!family && /[\uE000-\uF8FF]/.test(chapter.text)) {
+    panel.querySelector('.novel-browser-status').textContent = '无法加载番茄章节字体'; return;
+  }
+  panel.querySelector('.novel-browser-title').textContent = chapter.title || '浏览器预览';
+  panel.querySelector('.novel-browser-status').textContent = '已连接 · ' +
+    (chapter.paragraphs || chapter.text.split('\n\n').length) + ' 段';
+  const content = panel.querySelector('.novel-browser-content');
+  content.textContent = chapter.text;
+  content.style.fontFamily = family || '';
+  content.scrollTop = 0;
+  if (save) {
+    novelChapters[m.id] = { url: chapter.url, title: chapter.title, text: chapter.text,
+      fontURL: chapter.fontURL, paragraphs: chapter.paragraphs };
+    novelSave();
+  }
+}
+
+function novelFontFamily(raw) {
+  if (!raw) return '';
+  let u;
+  try { u = new URL(raw); } catch { return ''; }
+  if (u.protocol !== 'https:' || !/^lf[36]-awef\.bytetos\.com$/.test(u.hostname) ||
+      !u.pathname.endsWith('.woff2')) return '';
+  if (!novelFontCache.has(u.href)) {
+    const family = 'cngp-novel-' + novelFontCache.size;
+    const style = document.createElement('style');
+    style.textContent = '@font-face{font-family:"' + family + '";src:url("' + u.href + '") format("woff2");font-weight:400}';
+    document.head.appendChild(style);
+    novelFontCache.set(u.href, family);
+  }
+  return novelFontCache.get(u.href);
+}
+
+function novelReply(m, text, ts, fontURL = '') {
+  if (ts) ensureDivider(ts);
+  const { realWrap } = appendAIRow(m.name);
+  if (ts) {
+    const time = document.createElement('div'); time.className = 'msg-ai-time';
+    time.textContent = fmtDividerLabel(ts); time.title = fullStamp(ts); realWrap.appendChild(time);
+  }
+  const body = document.createElement('div'); body.className = 'ai-body';
+  body.textContent = text;
+  if (fontURL) body.style.fontFamily = novelFontFamily(fontURL);
+  realWrap.appendChild(body);
+  return body;
+}
+
+function novelRemember(m, item) {
+  const entries = novelHistory[m.id] || [];
+  entries.push(item);
+  if (entries.length > 80) entries.splice(0, entries.length - 80);
+  novelHistory[m.id] = entries;
+  novelSave();
+}
+
+async function novelSend(text) {
+  const m = novelModels.find(x => x.id === state.target.id);
+  if (!m) return;
+  if (state.cur !== 'novel:' + m.id) novelSelect(m);
+  input.value = ''; autoGrow(); btnSend.disabled = true;
+  const ts = Math.floor(Date.now() / 1000);
+  appendOwn(text, ts); novelRemember(m, { own: true, text, ts });
+  if (m.url) {
+    if (new URL(m.url).hostname === 'fanqienovel.com') {
+      const op = /^(上一章|上章)$/.test(text) ? 'previous' : /^(下一章|下章)$/.test(text) ? 'next' : 'attach';
+      await novelReaderControl(op, m);
+    } else {
+      const reply = '请在来源网站打开这个链接。';
+      const replyTS = Math.floor(Date.now() / 1000);
+      novelReply(m, reply, replyTS); novelRemember(m, { text: reply, ts: replyTS });
+    }
+    return;
+  }
+  try {
+    const d = await api('/api/custom-models/' + m.id + '/next', { method: 'POST', body: {} });
+    const replyTS = Math.floor(Date.now() / 1000);
+    novelReply(m, d.content || '已读完', replyTS);
+    novelRemember(m, { text: d.content || '已读完', ts: replyTS });
+  } catch (e) { toast(e.message); }
+}
+
+function novelAddFanqieControls(box, m) {
+  const hint = document.createElement('div'); hint.className = 'novel-hint';
+  hint.textContent = '你正在和 ' + m.name + ' 对话';
+  box.appendChild(hint);
+}
+
+async function novelUploadTXT(m) {
+  const file = document.createElement('input'); file.type = 'file'; file.accept = '.txt,text/plain'; file.hidden = true;
+  document.body.appendChild(file);
+  file.onchange = async () => {
+    try {
+      const selected = file.files[0]; if (!selected) return;
+      if (selected.size > 2 * 1024 * 1024) throw new Error('TXT 文件不能超过 2 MB');
+      const text = await selected.text();
+      await api('/api/custom-models/' + m.id + '/text', { method: 'PUT', body: { text } });
+      toast('TXT 已上传，发送“继续”阅读');
+    } catch (e) { toast(e.message); }
+    finally { file.remove(); }
+  };
+  file.click();
+}
+
+function novelAddToMenu(menu) {
+  for (const m of novelModels) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'model-item';
+    const title = document.createElement('div'); title.className = 'm-name'; title.textContent = m.name;
+    const desc = document.createElement('div'); desc.className = 'm-desc';
+    desc.textContent = m.url ? '自定义阅读模型' : 'TXT 阅读模型';
+    b.append(title, desc); b.onclick = () => { novelSelect(m); closeModelMenu(); };
+    menu.appendChild(b);
+  }
+  const add = document.createElement('button'); add.type = 'button'; add.className = 'model-item';
+  add.textContent = '＋ 添加自定义模型'; add.onclick = () => { closeModelMenu(); novelCreateModal(); };
+  menu.appendChild(add);
+}
+
+function novelCreateModal() {
+  const root = $('#modalRoot'); root.innerHTML = '';
+  const overlay = document.createElement('div'); overlay.className = 'overlay';
+  const form = document.createElement('form'); form.className = 'modal';
+  const h = document.createElement('h3'); h.textContent = '添加自定义模型';
+  const sub = document.createElement('p'); sub.className = 'modal-sub';
+  sub.textContent = '填写名称和番茄小说链接；不填链接可稍后上传 TXT。';
+  const name = document.createElement('input'); name.placeholder = '模型名称'; name.maxLength = 40; name.required = true;
+  const url = document.createElement('input'); url.placeholder = '小说链接（可选）'; url.type = 'url';
+  const actions = document.createElement('div'); actions.className = 'modal-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
+  cancel.onclick = () => { root.innerHTML = ''; };
+  const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = '添加';
+  actions.append(cancel, save); form.append(h, sub, name, url, actions); overlay.appendChild(form); root.appendChild(overlay);
+  overlay.onclick = e => { if (e.target === overlay) root.innerHTML = ''; };
+  form.onsubmit = async e => {
+    e.preventDefault(); save.disabled = true;
+    try {
+      const d = await api('/api/custom-models', { body: { name: name.value.trim(), url: url.value.trim() } });
+      root.innerHTML = ''; await novelLoad();
+      novelSelect(novelModels.find(m => m.id === d.model.id) || d.model);
+    } catch (err) { toast(err.message); save.disabled = false; }
+  };
+  name.focus();
+}
