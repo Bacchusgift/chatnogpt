@@ -135,19 +135,52 @@ function clearUnread(id) {
 
 // 新消息提醒：标题计数 + 浏览器系统通知；onScreen 表示消息正显示在当前会话里，
 // 页签可见时不重复弹窗（内容已在眼前），页签隐藏时照常提醒。
+const NOTIF_ICON = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 32 32\'%3E%3Ccircle cx=\'16\' cy=\'16\' r=\'14\' fill=\'%230d0d0d\'/%3E%3Cpath d=\'M9 13h14M9 18h9\' stroke=\'white\' stroke-width=\'2.4\' stroke-linecap=\'round\'/%3E%3C/svg%3E';
+
+// 新消息提示音：短促双音，可关闭（通知声音开关在“思考强度”菜单里）
+let notifyAudioCtx = null;
+function playNotifySound() {
+  try {
+    if (localStorage.getItem('cngp_sound') === '0') return;
+    notifyAudioCtx = notifyAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (notifyAudioCtx.state === 'suspended') notifyAudioCtx.resume();
+    const t = notifyAudioCtx.currentTime;
+    const osc = notifyAudioCtx.createOscillator();
+    const gain = notifyAudioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, t);
+    osc.frequency.setValueAtTime(660, t + 0.12);
+    gain.gain.setValueAtTime(0.001, t);
+    gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+    osc.connect(gain).connect(notifyAudioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.45);
+  } catch {}
+}
+
 function notifyMessage(convID, title, body, onScreen = false) {
   bumpUnread();
+  playNotifySound();
   try {
-    if ((!onScreen || document.hidden) && 'Notification' in window && Notification.permission === 'granted') {
-      const n = new Notification(title, { body: body.slice(0, 120), tag: 'cngp-' + convID });
-      n.onclick = () => {
-        window.focus();
-        resetUnread();
-        clearUnread(convID);
-        if (convID !== state.cur) selectConv(convID);
-        n.close();
-      };
-    }
+    if (!('Notification' in window)) return;
+    // 只有“正在看这个会话且窗口聚焦”时才不弹（消息已在眼前），其余一律系统级弹出
+    if (onScreen && !document.hidden && document.hasFocus()) return;
+    if (Notification.permission !== 'granted') return;
+    const n = new Notification(title, {
+      body: body.slice(0, 120),
+      tag: 'cngp-' + convID,
+      icon: NOTIF_ICON,
+      requireInteraction: true, // 常驻直到点击，不再几秒后自动消失
+      silent: false,
+    });
+    n.onclick = () => {
+      window.focus();
+      resetUnread();
+      clearUnread(convID);
+      if (convID !== state.cur) selectConv(convID);
+      n.close();
+    };
   } catch {}
 }
 
@@ -378,6 +411,34 @@ function showApp() {
   if (state.coverMode) ensureCoverPool();
   loadConvs();
   novelLoad();
+  maybeShowNotifBanner();
+}
+
+// 通知授权引导：未授权时在输入区上方展示，授权成功或点“暂不”后本次不再出现
+function maybeShowNotifBanner() {
+  try {
+    if (!('Notification' in window) || Notification.permission === 'granted') return;
+    if (localStorage.getItem('cngp_notif_banner') === '0') return;
+    $('#notifBanner')?.remove();
+    const bar = document.createElement('div');
+    bar.id = 'notifBanner';
+    bar.className = 'notif-banner';
+    bar.append('开启系统通知，第一时间收到新消息');
+    const enable = document.createElement('button');
+    enable.textContent = '开启系统通知';
+    enable.onclick = async () => {
+      try {
+        const p = await Notification.requestPermission();
+        if (p === 'granted') { bar.remove(); toast('系统通知已开启'); }
+        else { bar.textContent = '通知已被浏览器拒绝：请在地址栏左侧站点设置里允许通知后刷新'; }
+      } catch {}
+    };
+    const later = document.createElement('button');
+    later.textContent = '暂不';
+    later.onclick = () => { localStorage.setItem('cngp_notif_banner', '0'); bar.remove(); };
+    bar.append(enable, later);
+    document.querySelector('.composer-wrap').prepend(bar);
+  } catch {}
 }
 
 function doLogoutLocal() {
@@ -1189,6 +1250,15 @@ function renderEffortMenu() {
     b.onclick = () => { setEffort(opt.k); effortMenu.classList.add('hidden'); };
     effortMenu.appendChild(b);
   }
+  const soundToggle = document.createElement('button');
+  soundToggle.type = 'button';
+  soundToggle.className = 'model-item';
+  soundToggle.textContent = '通知声音：' + (localStorage.getItem('cngp_sound') === '0' ? '关' : '开');
+  soundToggle.onclick = () => {
+    localStorage.setItem('cngp_sound', localStorage.getItem('cngp_sound') === '0' ? '1' : '0');
+    renderEffortMenu();
+  };
+  effortMenu.appendChild(soundToggle);
   if (state.coverMode && typeof novelResetRevealSelection === 'function') {
     const reset = document.createElement('button'); reset.type = 'button';
     reset.className = 'model-item'; reset.textContent = '重置大小';

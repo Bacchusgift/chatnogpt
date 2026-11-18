@@ -355,6 +355,16 @@ body.cover-on .msg-real.covered.flash::after {
 }
 #btnSend:disabled { background: #383838; color: #777; cursor: default; }
 #btnSend:not(:disabled):hover { background: #5f5f5f; }
+#notifBanner {
+  display: flex; align-items: center; gap: 10px; margin: 10px 14px 0;
+  padding: 10px 14px; background: #22342a; color: #d9ead9;
+  border: 1px solid #3f5c47; border-radius: 12px; font-size: 13px;
+}
+#notifBanner button {
+  padding: 5px 10px; border-radius: 8px; border: 1px solid #56816a;
+  background: #35503f; color: #e6f4ea; font-size: 12px;
+}
+#notifBanner button:last-child { margin-left: auto; background: transparent; border-color: transparent; color: #9fb8a8; }
 .composer-hint { text-align: center; font-size: 12px; color: #7a7a7a; margin-top: 8px; }
 
 /* 下拉菜单（模型 / 完全访问） */
