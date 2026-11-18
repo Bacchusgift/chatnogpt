@@ -502,7 +502,61 @@ async function startNewConversation() {
       };
       panel.insertBefore(btn, cancel);
     }
+    const roomBtn = document.createElement('button');
+    roomBtn.textContent = '＋ 创建群聊室';
+    roomBtn.onclick = () => { close(); createRoomModal(); };
+    panel.insertBefore(roomBtn, cancel);
+    const sep = document.createElement('div');
+    sep.className = 'time-divider';
+    sep.textContent = '';
+    panel.insertBefore(sep, roomBtn);
   } catch (e) { close(); toast(e.message); }
+}
+
+function createRoomModal() {
+  const root = $('#modalRoot');
+  root.innerHTML = '';
+  const overlay = document.createElement('div');
+  overlay.className = 'picker-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'picker-panel';
+  const heading = document.createElement('h2');
+  heading.textContent = '创建群聊室';
+  const titleField = document.createElement('input');
+  titleField.placeholder = '房间名称';
+  titleField.maxLength = 60;
+  const inviteField = document.createElement('input');
+  inviteField.placeholder = '邀请成员（模型名，用逗号分隔，可留空）';
+  const status = document.createElement('p');
+  status.className = 'novel-hint';
+  status.style.margin = '8px 0 0';
+  const save = document.createElement('button');
+  save.textContent = '创建房间';
+  const close = () => { root.innerHTML = ''; };
+  const cancel = document.createElement('button');
+  cancel.className = 'cancel';
+  cancel.textContent = '取消';
+  cancel.onclick = close;
+  save.onclick = async () => {
+    const invite = inviteField.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean);
+    save.disabled = true;
+    status.textContent = '';
+    try {
+      const d = await api('/api/rooms', { body: { title: titleField.value, invite } });
+      close();
+      if (d.missing?.length) toast('未找到成员：' + d.missing.join('、'));
+      await loadConvs(true);
+      await selectConv(d.conversation.id);
+      closeSidebarMobile();
+    } catch (e) {
+      save.disabled = false;
+      status.textContent = e.message;
+    }
+  };
+  panel.append(heading, titleField, inviteField, status, save, cancel);
+  overlay.appendChild(panel);
+  root.appendChild(overlay);
+  titleField.focus();
 }
 
 function renameConv(id, title) {
@@ -552,7 +606,8 @@ async function selectConv(id) {
     const d = await api('/api/conversations/' + id);
     if (state.cur !== id || state.gen !== gen) return;
     state.curInfo = d.conversation;
-    $('#convTitle').textContent = d.conversation.title;
+    $('#convTitle').textContent = d.conversation.title +
+      (d.conversation.kind === 1 ? ' · ' + d.conversation.member_count + ' 人' : '');
     $('#btnRenameConv').classList.remove('hidden');
     // 打开某个聊天 = 选中了对方那个“模型”
     if (d.conversation.peer_id) {
@@ -1230,13 +1285,14 @@ async function send() {
   const text = input.value.trim();
   const attachment = state.attachment;
   if (!text && !attachment) return;
-  if (!state.target) { toast('请先在左下角选择一个模型'); return; }
-  if (state.target.custom) {
+  const room = state.curInfo?.kind === 1;
+  if (!room && !state.target) { toast('请先在左下角选择一个模型'); return; }
+  if (state.target?.custom) {
     if (attachment) { toast('小说阅读会话暂不支持发送图片'); return; }
     novelSend(text);
     return;
   }
-  const targetID = state.target.id;
+  const targetID = state.target ? state.target.id : '';
   const initialConv = state.cur;
   state.sending = true;
   btnSend.disabled = true;
@@ -1246,7 +1302,7 @@ async function send() {
       throw new Error('发送期间切换了会话，请重新发送');
     }
     const payload = { text, imageID };
-    if (state.cur && state.curInfo?.peer_id === targetID) {
+    if (room || (state.cur && state.curInfo?.peer_id === targetID)) {
       if (state.wsConv === state.cur && state.ws?.readyState === 1) doSend(payload);
       else state.pendingSend = { convID: state.cur, payload };
     } else {

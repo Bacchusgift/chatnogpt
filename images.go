@@ -98,7 +98,7 @@ func (s *server) handleImages(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid WebP image"))
 		return
 	}
-	dir := filepath.Join(filepath.Dir(s.store.path), "images", u.ID)
+	dir := filepath.Join(s.store.dir, "images", u.ID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -149,7 +149,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	f, err := os.Open(filepath.Join(filepath.Dir(s.store.path), "images", owner, id+".webp"))
+	f, err := os.Open(filepath.Join(s.store.dir, "images", owner, id+".webp"))
 	if err != nil {
 		http.NotFound(w, r)
 		return

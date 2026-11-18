@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
@@ -50,26 +52,27 @@ type Message struct {
 }
 
 type Conv struct {
-	ID        string             `json:"id"`
-	Code      string             `json:"code"`
-	Title     string             `json:"title"` // 创建者取的原始标题
-	CreatorID string             `json:"creator_id"`
-	CreatedAt int64              `json:"created_at"`
-	CreatedNS int64              `json:"created_ns,omitempty"`
-	Members   map[string]*Member `json:"members"`
-	Messages  []*Message         `json:"messages"`
+	ID        string `json:"id"`
+	Code      string `json:"code"`
+	Title     string `json:"title"` // 创建者取的原始标题
+	CreatorID string `json:"creator_id"`
+	CreatedAt int64  `json:"created_at"`
+	CreatedNS int64  `json:"created_ns,omitempty"`
+	Kind      int    `json:"kind"` // 0=一对一，1=群聊室
 }
 
 type convBrief struct {
 	ID    string `json:"id"`
 	Title string `json:"title"` // 当前用户视角的标题
 	Code  string `json:"code"`
+	Kind  int    `json:"kind"`
 }
 
 type convSummary struct {
 	ID           string `json:"id"`
 	Title        string `json:"title"`
 	Code         string `json:"code"`
+	Kind         int    `json:"kind"`
 	MemberCount  int    `json:"member_count"`
 	CreatedAt    int64  `json:"created_at"`
 	LastTS       int64  `json:"last_ts"`
@@ -87,6 +90,7 @@ type convOut struct {
 	ID           string         `json:"id"`
 	Title        string         `json:"title"`
 	Code         string         `json:"code"`
+	Kind         int            `json:"kind"`
 	CreatorID    string         `json:"creator_id"`
 	CreatedAt    int64          `json:"created_at"`
 	MemberCount  int            `json:"member_count"`
@@ -99,137 +103,167 @@ type imageRecord struct {
 	OwnerID string `json:"owner_id"`
 }
 
-type persistData struct {
-	CustomModels map[string]*CustomModel `json:"custom_models,omitempty"`
-	Images       map[string]imageRecord  `json:"images"`
-	Users        map[string]*User        `json:"users"`
-	ByName       map[string]string       `json:"users_by_name"` // username(小写) -> user id
-	ByNick       map[string]string       `json:"users_by_nick"` // 模型名称(小写) -> user id
-	Tokens       map[string]string       `json:"tokens"`
-	ConvByCode   map[string]string       `json:"conv_by_code"`
-	Convs        map[string]*Conv        `json:"convs"`
-}
-
 type CustomModel struct {
 	ID            string `json:"id"`
 	OwnerID       string `json:"owner_id"`
 	Name          string `json:"name"`
 	URL           string `json:"url,omitempty"`
 	Text          string `json:"text,omitempty"`
-	Position      int    `json:"position"`
+	Position      int64  `json:"position"`
 	ChapterID     string `json:"chapter_id,omitempty"`
-	ChapterOffset int    `json:"chapter_offset,omitempty"`
+	ChapterOffset int64  `json:"chapter_offset,omitempty"`
 	CreatedAt     int64  `json:"created_at"`
-}
-
-// Store is a tiny JSON-file backed store, fine for a friends-sized
-// deployment; swap in a real database if it ever outgrows that.
-type Store struct {
-	mu        sync.Mutex
-	path      string
-	d         *persistData
-	createdNS int64 // 最近一次分配的会话创建时间（纳秒），保证单调递增，不受墙钟回拨影响
-}
-
-func LoadStore(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	s := &Store{path: filepath.Join(dir, "data.json")}
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			s.d = freshData()
-			return s, nil
-		}
-		return nil, err
-	}
-	d := &persistData{}
-	if err := json.Unmarshal(raw, d); err != nil {
-		return nil, err
-	}
-	if d.Users == nil {
-		d.Users = map[string]*User{}
-	}
-	if d.ByName == nil {
-		d.ByName = map[string]string{}
-	}
-	if d.ByNick == nil {
-		d.ByNick = map[string]string{}
-	}
-	// ByNick is a derived index: rebuild it on load so data written by older
-	// versions (before nickname login existed) can still log in by name.
-	d.ByNick = map[string]string{}
-	for id, u := range d.Users {
-		d.ByNick[strings.ToLower(u.Nickname)] = id
-	}
-	if d.Tokens == nil {
-		d.Tokens = map[string]string{}
-	}
-	if d.ConvByCode == nil {
-		d.ConvByCode = map[string]string{}
-	}
-	if d.Convs == nil {
-		d.Convs = map[string]*Conv{}
-	}
-	if d.CustomModels == nil {
-		d.CustomModels = map[string]*CustomModel{}
-	}
-	if d.Images == nil {
-		d.Images = map[string]imageRecord{}
-	}
-	s.d = d
-	return s, nil
-}
-
-func freshData() *persistData {
-	return &persistData{
-		Images:       map[string]imageRecord{},
-		Users:        map[string]*User{},
-		ByName:       map[string]string{},
-		ByNick:       map[string]string{},
-		Tokens:       map[string]string{},
-		ConvByCode:   map[string]string{},
-		Convs:        map[string]*Conv{},
-		CustomModels: map[string]*CustomModel{},
-	}
-}
-
-// saveLocked persists atomically: write a temp file, then rename over the old one.
-func (s *Store) saveLocked() {
-	raw, err := json.Marshal(s.d)
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, s.path)
 }
 
 func now() int64 { return time.Now().Unix() }
 
-// nextNS 返回严格递增的纳秒时间戳；同一进程内创建顺序即可决定“最新会话”。
-func (s *Store) nextNS() int64 {
-	ns := time.Now().UnixNano()
-	if ns <= s.createdNS {
-		ns = s.createdNS + 1
-	}
-	s.createdNS = ns
-	return ns
-}
-
 func clampTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		title = "新的会话"
+		return "新的会话"
 	}
-	r := []rune(title)
-	if len(r) > 60 {
-		title = string(r[:60])
+	if n := len([]rune(title)); n > 60 {
+		title = string([]rune(title)[:60])
 	}
 	return title
+}
+
+// Store backs every API/WS handler with MariaDB. Image files stay on disk
+// under dir/images/<userID>; the database only keeps their metadata.
+type Store struct {
+	db     *sql.DB
+	dir    string
+	mu     sync.Mutex
+	lastNS int64 // 会话创建顺序的时间戳（纳秒），保证单调递增
+}
+
+const storeSchema = `
+CREATE TABLE IF NOT EXISTS users (
+  id CHAR(12) PRIMARY KEY,
+  username VARCHAR(64) NOT NULL,
+  username_lc VARCHAR(64) NOT NULL UNIQUE,
+  nickname VARCHAR(64) NOT NULL,
+  nickname_lc VARCHAR(64) NOT NULL UNIQUE,
+  salt VARCHAR(64) NOT NULL,
+  hash VARCHAR(128) NOT NULL,
+  created_at BIGINT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS tokens (
+  token CHAR(48) PRIMARY KEY,
+  user_id CHAR(12) NOT NULL,
+  KEY idx_tokens_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS convs (
+  id CHAR(12) PRIMARY KEY,
+  code VARCHAR(16) NOT NULL UNIQUE,
+  title VARCHAR(120) NOT NULL,
+  creator_id CHAR(12) NOT NULL,
+  created_at BIGINT NOT NULL,
+  created_ns BIGINT NOT NULL DEFAULT 0,
+  kind TINYINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS conv_members (
+  conv_id CHAR(12) NOT NULL,
+  user_id CHAR(12) NOT NULL,
+  title VARCHAR(120) NOT NULL DEFAULT '',
+  joined_at BIGINT NOT NULL,
+  PRIMARY KEY (conv_id, user_id),
+  KEY idx_cm_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS messages (
+  id CHAR(12) PRIMARY KEY,
+  conv_id CHAR(12) NOT NULL,
+  sender_id CHAR(12) NOT NULL,
+  nickname VARCHAR(64) NOT NULL DEFAULT '',
+  content MEDIUMTEXT,
+  ts BIGINT NOT NULL,
+  client_msg_id VARCHAR(64) DEFAULT NULL,
+  image_id VARCHAR(12) DEFAULT NULL,
+  UNIQUE KEY uq_client (conv_id, client_msg_id),
+  KEY idx_msg_conv_ts (conv_id, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS images (
+  id CHAR(12) PRIMARY KEY,
+  owner_id CHAR(12) NOT NULL,
+  KEY idx_img_owner (owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS custom_models (
+  id CHAR(12) PRIMARY KEY,
+  owner_id CHAR(12) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  url VARCHAR(2048) NOT NULL DEFAULT '',
+  text MEDIUMTEXT NULL,
+  position BIGINT NOT NULL DEFAULT 0,
+  chapter_id VARCHAR(64) NOT NULL DEFAULT '',
+  chapter_offset BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL,
+  KEY idx_cm_owner (owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`
+
+// OpenStore connects to MariaDB and makes sure the schema exists.
+func OpenStore(dsn, dir string) (*Store, error) {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
+	db.SetConnMaxLifetime(time.Hour)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	for _, stmt := range strings.Split(storeSchema, ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("初始化表结构: %w", err)
+		}
+	}
+	return &Store{db: db, dir: dir}, nil
+}
+
+func (s *Store) Close() error { return s.db.Close() }
+
+// Fresh empties every table; used by the test harness between servers.
+func (s *Store) Fresh() error {
+	for _, table := range []string{"messages", "conv_members", "convs", "custom_models", "images", "tokens", "users"} {
+		if _, err := s.db.Exec("DELETE FROM " + table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// nextNS returns a strictly increasing nanosecond stamp so conversation
+// creation order survives identical wall-clock times and clock steps.
+func (s *Store) nextNS() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := time.Now().UnixNano()
+	if ns <= s.lastNS {
+		ns = s.lastNS + 1
+	}
+	s.lastNS = ns
+	return ns
+}
+
+func nullStr(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func sqlErrCode(err error) uint16 {
+	var myErr interface{ ErrorNumber() uint16 }
+	if errors.As(err, &myErr) {
+		return myErr.ErrorNumber()
+	}
+	return 0
 }
 
 // ---- users & auth ----
@@ -240,23 +274,47 @@ func (s *Store) CreateUser(username, nickname, password string) (*User, string, 
 	if err := validateRegister(username, nickname, password); err != nil {
 		return nil, "", err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, taken := s.d.ByName[username]; taken {
-		return nil, "", ErrNameTaken
-	}
-	if _, taken := s.d.ByNick[strings.ToLower(nickname)]; taken {
+	if s.nicknameTaken(nickname) {
 		return nil, "", ErrNickTaken
+	}
+	if s.usernameTaken(username) {
+		return nil, "", ErrNameTaken
 	}
 	u := &User{ID: newID(), Username: username, Nickname: nickname, CreatedAt: now()}
 	u.Salt, u.Hash = hashPassword(password)
-	s.d.Users[u.ID] = u
-	s.d.ByName[username] = u.ID
-	s.d.ByNick[strings.ToLower(nickname)] = u.ID
-	token := newToken()
-	s.d.Tokens[token] = u.ID
-	s.saveLocked()
+	if _, err := s.db.Exec(`INSERT INTO users (id, username, username_lc, nickname, nickname_lc, salt, hash, created_at)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		u.ID, u.Username, u.Username, u.Nickname, strings.ToLower(u.Nickname), u.Salt, u.Hash, u.CreatedAt); err != nil {
+		if sqlErrCode(err) == 1062 {
+			return nil, "", ErrNameTaken
+		}
+		return nil, "", err
+	}
+	token, err := s.insertToken(u.ID)
+	if err != nil {
+		return nil, "", err
+	}
 	return u, token, nil
+}
+
+func (s *Store) insertToken(userID string) (string, error) {
+	token := newToken()
+	if _, err := s.db.Exec("INSERT INTO tokens (token, user_id) VALUES (?,?)", token, userID); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *Store) usernameTaken(name string) bool {
+	var one int
+	err := s.db.QueryRow("SELECT 1 FROM users WHERE username_lc=? LIMIT 1", name).Scan(&one)
+	return err == nil
+}
+
+func (s *Store) nicknameTaken(name string) bool {
+	var one int
+	err := s.db.QueryRow("SELECT 1 FROM users WHERE nickname_lc=? LIMIT 1", strings.ToLower(name)).Scan(&one)
+	return err == nil
 }
 
 // modelNames is the pool used to auto-generate model-style display names.
@@ -268,11 +326,11 @@ var modelNames = []string{
 	"step-3-max", "nova-pro-2", "orion-7b-chat",
 }
 
-// suggestLocked picks an unused model-style name (call with lock held).
-func (s *Store) suggestLocked() string {
+// SuggestModelName returns an unused model-style name for the register form.
+func (s *Store) SuggestModelName() string {
 	for i := 0; i < 32; i++ {
 		name := modelNames[fastrand()%len(modelNames)]
-		if _, taken := s.d.ByNick[strings.ToLower(name)]; !taken {
+		if !s.nicknameTaken(name) {
 			return name
 		}
 	}
@@ -282,13 +340,6 @@ func (s *Store) suggestLocked() string {
 func fastrand() int {
 	b := randomBytes(4)
 	return int(b[0]) | int(b[1])<<8 | int(b[2])<<16 | int(b[3])<<24
-}
-
-// SuggestModelName returns an unused model-style name for the register form.
-func (s *Store) SuggestModelName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.suggestLocked()
 }
 
 // slugifyName derives a login-safe username from a display name.
@@ -305,23 +356,21 @@ func slugifyName(name string) string {
 // derived internally. If the requested name is taken, a fresh suggestion is
 // used automatically and returned via the resulting user.
 func (s *Store) Register(name, password string) (*User, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(password) < 6 || len(password) > 64 {
 		return nil, "", fmt.Errorf("密码长度需在 6-64 位之间")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		name = s.suggestLocked()
+		name = s.SuggestModelName()
 	} else if n := len([]rune(name)); n > 30 {
 		return nil, "", fmt.Errorf("模型名称需为 1-30 个字符")
-	} else if _, taken := s.d.ByNick[strings.ToLower(name)]; taken {
+	} else if s.nicknameTaken(name) {
 		// 名称被占用：自动分配另一个可用的模型名
-		name = s.suggestLocked()
+		name = s.SuggestModelName()
 	}
 	slug := slugifyName(name)
 	for i := 0; i < 8; i++ {
-		if _, taken := s.d.ByName[slug]; !taken {
+		if !s.usernameTaken(slug) {
 			break
 		}
 		cut := len(slug)
@@ -332,79 +381,85 @@ func (s *Store) Register(name, password string) (*User, string, error) {
 	}
 	u := &User{ID: newID(), Username: slug, Nickname: name, CreatedAt: now()}
 	u.Salt, u.Hash = hashPassword(password)
-	s.d.Users[u.ID] = u
-	s.d.ByName[slug] = u.ID
-	s.d.ByNick[strings.ToLower(name)] = u.ID
-	token := newToken()
-	s.d.Tokens[token] = u.ID
-	s.saveLocked()
+	if _, err := s.db.Exec(`INSERT INTO users (id, username, username_lc, nickname, nickname_lc, salt, hash, created_at)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		u.ID, u.Username, u.Username, u.Nickname, strings.ToLower(u.Nickname), u.Salt, u.Hash, u.CreatedAt); err != nil {
+		if sqlErrCode(err) == 1062 {
+			return nil, "", ErrNameTaken
+		}
+		return nil, "", err
+	}
+	token, err := s.insertToken(u.ID)
+	if err != nil {
+		return nil, "", err
+	}
 	return u, token, nil
 }
 
 func (s *Store) Login(name, password string) (*User, string, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.d.ByNick[key]
-	if !ok {
-		id, ok = s.d.ByName[key]
+	var u User
+	row := s.db.QueryRow(`SELECT id, username, nickname, salt, hash, created_at FROM users
+		WHERE nickname_lc=? OR username_lc=? LIMIT 1`, key, key)
+	if err := row.Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", ErrBadAccount
+		}
+		return nil, "", err
 	}
-	if !ok {
+	if !verifyPassword(password, u.Salt, u.Hash) {
 		return nil, "", ErrBadAccount
 	}
-	u := s.d.Users[id]
-	if u == nil || !verifyPassword(password, u.Salt, u.Hash) {
-		return nil, "", ErrBadAccount
+	token, err := s.insertToken(u.ID)
+	if err != nil {
+		return nil, "", err
 	}
-	token := newToken()
-	s.d.Tokens[token] = u.ID
-	s.saveLocked()
-	return u, token, nil
+	return &u, token, nil
 }
 
 func (s *Store) UserByToken(token string) *User {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.d.Tokens[token]
-	if !ok {
+	var u User
+	err := s.db.QueryRow(`SELECT u.id, u.username, u.nickname, u.salt, u.hash, u.created_at
+		FROM tokens t JOIN users u ON u.id=t.user_id WHERE t.token=?`, token).
+		Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt)
+	if err != nil {
 		return nil
 	}
-	return s.d.Users[id]
+	return &u
 }
 
 func (s *Store) DropToken(token string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.d.Tokens, token)
-	s.saveLocked()
+	s.db.Exec("DELETE FROM tokens WHERE token=?", token)
 }
 
 // ---- conversations ----
 
 func (s *Store) CreateConv(u *User, title string) convBrief {
 	title = clampTitle(title)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c := &Conv{
-		ID:        newID(),
-		Title:     title,
-		CreatorID: u.ID,
-		CreatedAt: now(),
-		CreatedNS: s.nextNS(), // 同秒创建的会话也按创建顺序取“最新”
-		Members:   map[string]*Member{},
-		Messages:  []*Message{},
+	id, code, err := s.insertConv(title, u.ID, 0)
+	if err != nil {
+		return convBrief{}
 	}
-	for {
-		c.Code = newInviteCode(8)
-		if _, clash := s.d.ConvByCode[c.Code]; !clash {
-			break
+	s.db.Exec("INSERT INTO conv_members (conv_id, user_id, title, joined_at) VALUES (?,?,?,?)", id, u.ID, title, now())
+	return convBrief{ID: id, Title: title, Code: code}
+}
+
+// insertConv creates the conversation row with a unique invite code and
+// returns (id, code). kind: 0=direct 1=room.
+func (s *Store) insertConv(title, creatorID string, kind int) (string, string, error) {
+	id, ns := newID(), s.nextNS()
+	for attempt := 0; attempt < 8; attempt++ {
+		code := newInviteCode(8)
+		_, err := s.db.Exec(`INSERT INTO convs (id, code, title, creator_id, created_at, created_ns, kind)
+			VALUES (?,?,?,?,?,?,?)`, id, code, title, creatorID, now(), ns, kind)
+		if err == nil {
+			return id, code, nil
+		}
+		if sqlErrCode(err) != 1062 {
+			return "", "", err
 		}
 	}
-	c.Members[u.ID] = &Member{UserID: u.ID, Title: title, JoinedAt: now()}
-	s.d.Convs[c.ID] = c
-	s.d.ConvByCode[c.Code] = c.ID
-	s.saveLocked()
-	return convBrief{ID: c.ID, Title: title, Code: c.Code}
+	return "", "", errors.New("无法生成邀请码")
 }
 
 // JoinConv adds the user to the conversation behind code, using their own
@@ -412,59 +467,71 @@ func (s *Store) CreateConv(u *User, title string) convBrief {
 func (s *Store) JoinConv(u *User, code, title string) (convBrief, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	title = clampTitle(title)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cid, ok := s.d.ConvByCode[code]
-	if !ok {
+	var id string
+	var kind int
+	var convTitle string
+	err := s.db.QueryRow("SELECT id, kind, title FROM convs WHERE code=?", code).Scan(&id, &kind, &convTitle)
+	if errors.Is(err, sql.ErrNoRows) {
 		return convBrief{}, ErrBadCode
 	}
-	c := s.d.Convs[cid]
-	local := title
-	if m, exists := c.Members[u.ID]; exists {
-		local = m.Title
-	} else {
-		c.Members[u.ID] = &Member{UserID: u.ID, Title: title, JoinedAt: now()}
-		s.saveLocked()
+	if err != nil {
+		return convBrief{}, err
 	}
-	return convBrief{ID: c.ID, Title: local, Code: c.Code}, nil
+	var local string
+	err = s.db.QueryRow("SELECT title FROM conv_members WHERE conv_id=? AND user_id=?", id, u.ID).Scan(&local)
+	if errors.Is(err, sql.ErrNoRows) {
+		local = title
+		if _, err := s.db.Exec("INSERT INTO conv_members (conv_id, user_id, title, joined_at) VALUES (?,?,?,?)",
+			id, u.ID, title, now()); err != nil {
+			return convBrief{}, err
+		}
+	} else if err != nil {
+		return convBrief{}, err
+	}
+	return convBrief{ID: id, Title: local, Code: code, Kind: kind}, nil
 }
 
-// peerFields returns the other member of a 1:1 conversation (empty for groups).
-func (s *Store) peerFields(c *Conv, userID string) (string, string) {
-	if len(c.Members) != 2 {
+// peerOf returns the other member of a 1:1 conversation (empty for groups).
+func (s *Store) peerOf(convID, userID string, memberCount int) (string, string) {
+	if memberCount != 2 {
 		return "", ""
 	}
-	for mid := range c.Members {
-		if mid != userID {
-			nick := ""
-			if u := s.d.Users[mid]; u != nil {
-				nick = u.Nickname
-			}
-			return mid, nick
-		}
+	var pid, nick string
+	err := s.db.QueryRow(`SELECT cm.user_id, COALESCE(u.nickname,'') FROM conv_members cm
+		LEFT JOIN users u ON u.id=cm.user_id WHERE cm.conv_id=? AND cm.user_id<>? LIMIT 1`,
+		convID, userID).Scan(&pid, &nick)
+	if err != nil {
+		return "", ""
 	}
-	return "", ""
+	return pid, nick
 }
 
 func (s *Store) ListConvs(userID string) []convSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at,
+		COALESCE((SELECT MAX(m.ts) FROM messages m WHERE m.conv_id=c.id), 0) AS last_ts,
+		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id) AS member_count
+		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=?`, userID)
+	if err != nil {
+		return []convSummary{}
+	}
+	defer rows.Close()
 	out := []convSummary{}
-	for _, c := range s.d.Convs {
-		m, ok := c.Members[userID]
-		if !ok {
+	type row0 struct {
+		id, title, code    string
+		kind               int
+		createdAt, lastTS  int64
+		memberCount        int
+	}
+	for rows.Next() {
+		var r row0
+		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.lastTS, &r.memberCount); err != nil {
 			continue
 		}
-		last := int64(0)
-		if n := len(c.Messages); n > 0 {
-			last = c.Messages[n-1].TS
-		}
-		peerID, peerNick := s.peerFields(c, userID)
-		out = append(out, convSummary{
-			ID: c.ID, Title: m.Title, Code: c.Code,
-			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last,
-			PeerID: peerID, PeerNickname: peerNick,
-		})
+		out = append(out, convSummary{ID: r.id, Title: r.title, Code: r.code, Kind: r.kind,
+			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS})
+	}
+	for i := range out {
+		out[i].PeerID, out[i].PeerNickname = s.peerOf(out[i].ID, userID, out[i].MemberCount)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].LastTS != out[j].LastTS {
@@ -475,47 +542,58 @@ func (s *Store) ListConvs(userID string) []convSummary {
 	return out
 }
 
+// GetConv only checks membership; details come from ConvDetail.
 func (s *Store) GetConv(convID, userID string) (*Conv, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.d.Convs[convID]
-	if !ok {
+	var c Conv
+	err := s.db.QueryRow("SELECT id, code, title, creator_id, created_at, created_ns, kind FROM convs WHERE id=?",
+		convID).Scan(&c.ID, &c.Code, &c.Title, &c.CreatorID, &c.CreatedAt, &c.CreatedNS, &c.Kind)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	if _, member := c.Members[userID]; !member {
+	if err != nil {
+		return nil, err
+	}
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+		convID, userID).Scan(&one); err != nil {
 		return nil, ErrForbidden
 	}
-	return c, nil
+	return &c, nil
 }
 
 // ConvDetail returns everything the UI needs about a conversation, from the
 // calling user's point of view (their own title).
 func (s *Store) ConvDetail(convID, userID string) (convOut, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.d.Convs[convID]
-	if !ok {
+	var out convOut
+	var myTitle string
+	err := s.db.QueryRow(`SELECT c.id, c.code, c.kind, c.creator_id, c.created_at, cm.title,
+		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id)
+		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? WHERE c.id=?`,
+		userID, convID).Scan(&out.ID, &out.Code, &out.Kind, &out.CreatorID, &out.CreatedAt, &myTitle, &out.MemberCount)
+	if errors.Is(err, sql.ErrNoRows) {
 		return convOut{}, ErrNotFound
 	}
-	m, member := c.Members[userID]
-	if !member {
-		return convOut{}, ErrForbidden
+	if err != nil {
+		return convOut{}, err
 	}
-	members := make([]publicMember, 0, len(c.Members))
-	for _, mm := range c.Members {
-		nick := ""
-		if u := s.d.Users[mm.UserID]; u != nil {
-			nick = u.Nickname
+	out.Title = myTitle
+	memRows, err := s.db.Query(`SELECT cm.user_id, COALESCE(u.nickname,''), cm.joined_at
+		FROM conv_members cm LEFT JOIN users u ON u.id=cm.user_id WHERE cm.conv_id=?`, convID)
+	if err != nil {
+		return convOut{}, err
+	}
+	defer memRows.Close()
+	out.Members = []publicMember{}
+	for memRows.Next() {
+		var pm publicMember
+		if err := memRows.Scan(&pm.ID, &pm.Nickname, &pm.JoinedAt); err != nil {
+			return convOut{}, err
 		}
-		members = append(members, publicMember{ID: mm.UserID, Nickname: nick, JoinedAt: mm.JoinedAt})
+		out.Members = append(out.Members, pm)
 	}
-	sort.Slice(members, func(i, j int) bool { return members[i].JoinedAt < members[j].JoinedAt })
-	peerID, peerNick := s.peerFields(c, userID)
-	return convOut{
-		ID: c.ID, Title: m.Title, Code: c.Code, CreatorID: c.CreatorID,
-		CreatedAt: c.CreatedAt, MemberCount: len(c.Members),
-		PeerID: peerID, PeerNickname: peerNick, Members: members,
-	}, nil
+	sort.Slice(out.Members, func(i, j int) bool { return out.Members[i].JoinedAt < out.Members[j].JoinedAt })
+	out.PeerID, out.PeerNickname = s.peerOf(convID, userID, out.MemberCount)
+	return out, nil
 }
 
 // NewConvWith always creates a separate 1:1 conversation.
@@ -531,102 +609,81 @@ func (s *Store) ConvWith(aID, bID string) (convBrief, error) {
 var conversationTitles = []string{"需求与方案", "技术讨论", "问题排查", "实现思路", "功能规划", "测试与验证"}
 
 func (s *Store) convWith(aID, bID string, createNew bool) (convBrief, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	a := s.d.Users[aID]
-	b := s.d.Users[bID]
-	if a == nil || b == nil {
+	if !createNew {
+		var id, myTitle, code string
+		var kind int
+		err := s.db.QueryRow(`SELECT c.id, me.title, c.code, c.kind FROM convs c
+			JOIN conv_members me ON me.conv_id=c.id AND me.user_id=?
+			JOIN conv_members pe ON pe.conv_id=c.id AND pe.user_id=? AND pe.user_id<>me.user_id
+			WHERE c.kind=0 AND (SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id)=2
+			ORDER BY c.created_ns DESC LIMIT 1`, aID, bID).Scan(&id, &myTitle, &code, &kind)
+		if err == nil {
+			return convBrief{ID: id, Title: myTitle, Code: code, Kind: kind}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return convBrief{}, err
+		}
+	}
+	var aName, bName string
+	if err := s.db.QueryRow("SELECT nickname FROM users WHERE id=?", aID).Scan(&aName); err != nil {
+		return convBrief{}, ErrUserNotFound
+	}
+	if err := s.db.QueryRow("SELECT nickname FROM users WHERE id=?", bID).Scan(&bName); err != nil {
 		return convBrief{}, ErrUserNotFound
 	}
 	if aID == bID {
 		return convBrief{}, ErrSelfPeer
 	}
-	var latest *Conv
-	if !createNew {
-		for _, c := range s.d.Convs {
-			if len(c.Members) == 2 && c.Members[aID] != nil && c.Members[bID] != nil &&
-				(latest == nil || c.CreatedNS > latest.CreatedNS || c.CreatedNS == latest.CreatedNS && (c.CreatedAt > latest.CreatedAt || c.CreatedAt == latest.CreatedAt && c.ID > latest.ID)) {
-				latest = c
-			}
-		}
-	}
-	if latest != nil {
-		return convBrief{ID: latest.ID, Title: latest.Members[aID].Title, Code: latest.Code}, nil
-	}
 	title := conversationTitles[fastrand()%len(conversationTitles)] + " · " + randSuffix(4)
-	c := &Conv{
-		ID: newID(), Title: title, CreatorID: aID, CreatedAt: now(), CreatedNS: s.nextNS(),
-		Members: map[string]*Member{}, Messages: []*Message{},
+	id, code, err := s.insertConv(title, aID, 0)
+	if err != nil {
+		return convBrief{}, err
 	}
-	for {
-		c.Code = newInviteCode(8)
-		if _, clash := s.d.ConvByCode[c.Code]; !clash {
-			break
+	ts := now()
+	for _, member := range []string{aID, bID} {
+		if _, err := s.db.Exec("INSERT INTO conv_members (conv_id, user_id, title, joined_at) VALUES (?,?,?,?)",
+			id, member, title, ts); err != nil {
+			return convBrief{}, err
 		}
 	}
-	c.Members[aID] = &Member{UserID: aID, Title: title, JoinedAt: now()}
-	c.Members[bID] = &Member{UserID: bID, Title: title, JoinedAt: now()}
-	s.d.Convs[c.ID] = c
-	s.d.ConvByCode[c.Code] = c.ID
-	s.saveLocked()
-	return convBrief{ID: c.ID, Title: title, Code: c.Code}, nil
+	return convBrief{ID: id, Title: title, Code: code}, nil
 }
 
 func (s *Store) RenameConv(convID, userID, title string) (convOut, error) {
-	if strings.TrimSpace(title) == "" || len([]rune(strings.TrimSpace(title))) > 60 {
+	title = strings.TrimSpace(title)
+	if title == "" || len([]rune(title)) > 60 {
 		return convOut{}, errors.New("标题需为 1-60 个字符")
 	}
-	s.mu.Lock()
-	c := s.d.Convs[convID]
-	if c == nil {
-		s.mu.Unlock()
-		return convOut{}, ErrNotFound
+	res, err := s.db.Exec("UPDATE conv_members SET title=? WHERE conv_id=? AND user_id=?", title, convID, userID)
+	if err != nil {
+		return convOut{}, err
 	}
-	m := c.Members[userID]
-	if m == nil {
-		s.mu.Unlock()
+	if n, _ := res.RowsAffected(); n == 0 {
 		return convOut{}, ErrForbidden
 	}
-	m.Title = strings.TrimSpace(title)
-	s.saveLocked()
-	s.mu.Unlock()
 	return s.ConvDetail(convID, userID)
 }
 
 func (s *Store) RecordImage(id, owner string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.d.Images[id] = imageRecord{OwnerID: owner}
-	s.saveLocked()
+	s.db.Exec("INSERT INTO images (id, owner_id) VALUES (?,?) ON DUPLICATE KEY UPDATE owner_id=owner_id", id, owner)
 }
 
 func (s *Store) ImageOwner(id string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.d.Images[id].OwnerID
+	var owner string
+	s.db.QueryRow("SELECT owner_id FROM images WHERE id=?", id).Scan(&owner)
+	return owner
 }
 
 func (s *Store) CanReadImage(id, userID string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	owner := s.d.Images[id].OwnerID
-	if owner == "" {
+	var owner string
+	err := s.db.QueryRow(`SELECT i.owner_id FROM images i WHERE i.id=? AND
+		(i.owner_id=? OR EXISTS (SELECT 1 FROM messages m
+			JOIN conv_members cm ON cm.conv_id=m.conv_id AND cm.user_id=?
+			WHERE m.image_id=i.id))`, id, userID, userID).Scan(&owner)
+	if err != nil {
 		return "", false
 	}
-	if owner == userID {
-		return owner, true
-	}
-	for _, c := range s.d.Convs {
-		if c.Members[userID] == nil {
-			continue
-		}
-		for _, m := range c.Messages {
-			if m.ImageID == id {
-				return owner, true
-			}
-		}
-	}
-	return "", false
+	return owner, true
 }
 
 // ---- models (other users, shown in the composer's model picker) ----
@@ -637,16 +694,18 @@ type modelInfo struct {
 }
 
 func (s *Store) ListModels(exceptUserID string) []modelInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := []modelInfo{}
-	for _, u := range s.d.Users {
-		if u.ID == exceptUserID {
-			continue
-		}
-		out = append(out, modelInfo{ID: u.ID, Name: u.Nickname})
+	rows, err := s.db.Query("SELECT id, nickname FROM users WHERE id<>? ORDER BY nickname", exceptUserID)
+	if err != nil {
+		return []modelInfo{}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	defer rows.Close()
+	out := []modelInfo{}
+	for rows.Next() {
+		var m modelInfo
+		if rows.Scan(&m.ID, &m.Name) == nil {
+			out = append(out, m)
+		}
+	}
 	return out
 }
 
@@ -657,20 +716,20 @@ func (s *Store) AddMessage(convID, senderID, nickname, content, clientMsgID stri
 }
 
 func (s *Store) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.d.Convs[convID]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	if _, member := c.Members[senderID]; !member {
-		return nil, ErrForbidden
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+		convID, senderID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
 	}
 	if imageID != "" {
-		if s.d.Images[imageID].OwnerID != senderID {
+		var owner string
+		if err := s.db.QueryRow("SELECT owner_id FROM images WHERE id=?", imageID).Scan(&owner); err != nil || owner != senderID {
 			return nil, ErrForbidden
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(s.path), "images", senderID, imageID+".webp")); err != nil {
+		if _, err := os.Stat(filepath.Join(s.dir, "images", senderID, imageID+".webp")); err != nil {
 			return nil, ErrNotFound
 		}
 	}
@@ -678,37 +737,196 @@ func (s *Store) AddMessageWithImage(convID, senderID, nickname, content, clientM
 		ID: newID(), SenderID: senderID, Nickname: nickname,
 		Content: content, TS: now(), ClientMsgID: clientMsgID, ImageID: imageID,
 	}
-	c.Messages = append(c.Messages, m)
-	const maxHistory = 5000
-	if len(c.Messages) > maxHistory {
-		c.Messages = c.Messages[len(c.Messages)-maxHistory:]
+	if _, err := s.db.Exec(`INSERT INTO messages (id, conv_id, sender_id, nickname, content, ts, client_msg_id, image_id)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		m.ID, convID, m.SenderID, m.Nickname, m.Content, m.TS, nullStr(m.ClientMsgID), nullStr(m.ImageID)); err != nil {
+		if sqlErrCode(err) == 1062 {
+			// 客户端重发同一条消息：视为成功，返回已存在的记录
+			if prev := s.messageByClientID(convID, clientMsgID); prev != nil {
+				return prev, nil
+			}
+		}
+		return nil, err
 	}
-	s.saveLocked()
+	// 与旧版一致：每个会话最多保留 5000 条消息
+	s.db.Exec(`DELETE m FROM messages m JOIN
+		(SELECT ts FROM messages WHERE conv_id=? ORDER BY ts DESC, id DESC LIMIT 1 OFFSET 5000) old
+		ON m.conv_id=? AND m.ts <= old.ts`, convID, convID)
 	return m, nil
+}
+
+func (s *Store) messageByClientID(convID, clientMsgID string) *Message {
+	if clientMsgID == "" {
+		return nil
+	}
+	var m Message
+	err := s.db.QueryRow(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'')
+		FROM messages WHERE conv_id=? AND client_msg_id=?`, convID, clientMsgID).
+		Scan(&m.ID, &m.SenderID, &m.Nickname, &m.Content, &m.TS, &m.ClientMsgID, &m.ImageID)
+	if err != nil {
+		return nil
+	}
+	return &m
 }
 
 // RecentMessages returns the latest messages in ascending order, optionally
 // only those newer than afterTS (used by clients to resync after a reconnect).
 func (s *Store) RecentMessages(convID, userID string, afterTS int64) ([]*Message, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.d.Convs[convID]
-	if !ok {
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+		convID, userID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'')
+		FROM messages WHERE conv_id=? AND (?=0 OR ts>?) ORDER BY ts DESC LIMIT 200`, convID, afterTS, afterTS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.SenderID, &m.Nickname, &m.Content, &m.TS, &m.ClientMsgID, &m.ImageID); err != nil {
+			continue
+		}
+		out = append(out, &m)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+// ---- rooms (multi-person group chat) ----
+
+// CreateRoom creates a kind=1 conversation and invites members by model name
+// (nickname or username, case-insensitive). Unmatched names are returned so
+// the caller can tell the user who was not invited.
+func (s *Store) CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error) {
+	title = clampTitle(title)
+	invited := map[string]bool{ownerID: true}
+	missing := []string{}
+	members := []string{}
+	for _, raw := range inviteNames {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			continue
+		}
+		var id string
+		err := s.db.QueryRow("SELECT id FROM users WHERE nickname_lc=? OR username_lc=? LIMIT 1", name, name).Scan(&id)
+		if err != nil || invited[id] {
+			missing = append(missing, strings.TrimSpace(raw))
+			continue
+		}
+		invited[id] = true
+		members = append(members, id)
+	}
+	id, code, err := s.insertConv(title, ownerID, 1)
+	if err != nil {
+		return convBrief{}, missing, err
+	}
+	ts := now()
+	for _, member := range append([]string{ownerID}, members...) {
+		if _, err := s.db.Exec("INSERT INTO conv_members (conv_id, user_id, title, joined_at) VALUES (?,?,?,?)",
+			id, member, title, ts); err != nil {
+			return convBrief{}, missing, err
+		}
+	}
+	return convBrief{ID: id, Title: title, Code: code, Kind: 1}, missing, nil
+}
+
+// RoomMembers lists the display names inside a room.
+func (s *Store) RoomMembers(convID, userID string) ([]string, error) {
+	if _, err := s.GetConv(convID, userID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT COALESCE(u.nickname,'') FROM conv_members cm
+		LEFT JOIN users u ON u.id=cm.user_id WHERE cm.conv_id=? ORDER BY cm.joined_at`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var nick string
+		if rows.Scan(&nick) == nil {
+			out = append(out, nick)
+		}
+	}
+	return out, nil
+}
+
+// ---- custom reading models ----
+
+// CreateCustomModel registers a private reading model for the owner.
+func (s *Store) CreateCustomModel(ownerID, name, url string) (CustomModel, error) {
+	m := CustomModel{ID: newID(), OwnerID: ownerID, Name: name, URL: url, CreatedAt: now()}
+	_, err := s.db.Exec(`INSERT INTO custom_models (id, owner_id, name, url, created_at) VALUES (?,?,?,?,?)`,
+		m.ID, m.OwnerID, m.Name, m.URL, m.CreatedAt)
+	return m, err
+}
+
+// ListCustomModels returns the owner's models without chapter text bodies.
+func (s *Store) ListCustomModels(ownerID string) ([]CustomModel, error) {
+	rows, err := s.db.Query(`SELECT id, owner_id, name, url, position, chapter_id, chapter_offset, created_at
+		FROM custom_models WHERE owner_id=? ORDER BY created_at`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CustomModel{}
+	for rows.Next() {
+		var m CustomModel
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.URL, &m.Position, &m.ChapterID, &m.ChapterOffset, &m.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// GetCustomModel returns one owner-owned model, including the TXT body.
+func (s *Store) GetCustomModel(modelID, ownerID string) (*CustomModel, error) {
+	var m CustomModel
+	var text sql.NullString
+	err := s.db.QueryRow(`SELECT id, owner_id, name, url, COALESCE(text,''), position, chapter_id, chapter_offset, created_at
+		FROM custom_models WHERE id=? AND owner_id=?`,
+		modelID, ownerID).Scan(&m.ID, &m.OwnerID, &m.Name, &m.URL, &text, &m.Position, &m.ChapterID, &m.ChapterOffset, &m.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	if _, member := c.Members[userID]; !member {
-		return nil, ErrForbidden
+	if err != nil {
+		return nil, err
 	}
-	const limit = 200
-	msgs := c.Messages
-	if afterTS > 0 {
-		idx := sort.Search(len(msgs), func(i int) bool { return msgs[i].TS > afterTS })
-		msgs = msgs[idx:]
+	m.Text = text.String
+	return &m, nil
+}
+
+// SaveCustomModelText stores a fresh TXT body and rewinds the position.
+func (s *Store) SaveCustomModelText(modelID, ownerID, text string) error {
+	res, err := s.db.Exec(`UPDATE custom_models SET text=?, position=0 WHERE id=? AND owner_id=?`,
+		text, modelID, ownerID)
+	if err != nil {
+		return err
 	}
-	if len(msgs) > limit {
-		msgs = msgs[len(msgs)-limit:]
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
-	out := make([]*Message, len(msgs))
-	copy(out, msgs)
-	return out, nil
+	return nil
+}
+
+// SaveCustomModelPosition advances the TXT reading position.
+func (s *Store) SaveCustomModelPosition(modelID, ownerID string, position int64) error {
+	_, err := s.db.Exec("UPDATE custom_models SET position=? WHERE id=? AND owner_id=?", position, modelID, ownerID)
+	return err
+}
+
+// SaveCustomModelProgress stores the remote chapter position.
+func (s *Store) SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error {
+	_, err := s.db.Exec("UPDATE custom_models SET chapter_id=?, chapter_offset=? WHERE id=? AND owner_id=?",
+		chapterID, offset, modelID, ownerID)
+	return err
 }

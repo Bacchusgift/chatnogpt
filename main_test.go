@@ -10,17 +10,57 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+// testDSN resolves the MySQL DSN used by tests: CHATNOGPT_TEST_DSN env or
+// data/conf/chatnogpt_test.env (gitignored). Tests skip without either.
+func testDSN(t *testing.T) string {
+	t.Helper()
+	if dsn := os.Getenv("CHATNOGPT_TEST_DSN"); dsn != "" {
+		return dsn
+	}
+	if b, err := os.ReadFile(filepath.Join("data", "conf", "chatnogpt_test.env")); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if v, ok := strings.CutPrefix(line, "CHATNOGPT_TEST_DSN="); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
+}
+
+func openTestStore(t *testing.T) *Store {
+	t.Helper()
+	dsn := testDSN(t)
+	if dsn == "" {
+		t.Skip("需要 MySQL 测试库：设置 CHATNOGPT_TEST_DSN 或创建 data/conf/chatnogpt_test.env")
+	}
+	st, err := OpenStore(dsn, t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	st := openTestStore(t)
+	if err := st.Fresh(); err != nil {
+		t.Fatalf("fresh db: %v", err)
+	}
+	return st
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	st, err := LoadStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("load store: %v", err)
-	}
+	st := testStore(t)
 	ts := httptest.NewServer(buildMux(newServer(st)))
 	t.Cleanup(ts.Close)
 	return ts
@@ -330,7 +370,8 @@ func TestModelRegisterAndConvWith(t *testing.T) {
 	}
 
 	// picking yourself is rejected
-	sc, _ := doJSON(t, "POST", ts.URL+"/api/conversations/with", tokenA, map[string]any{"peer_id": user["id"].(string)})
+	sc, selfResp := doJSON(t, "POST", ts.URL+"/api/conversations/with", tokenA, map[string]any{"peer_id": user["id"].(string)})
+	t.Logf("DEBUG self: sc=%d resp=%v userID=%v", sc, selfResp, user["id"])
 	if sc == http.StatusOK {
 		t.Fatal("self peer should be rejected")
 	}
@@ -477,10 +518,7 @@ func TestCoverLinesEndpoint(t *testing.T) {
 }
 
 func TestBuiltinCoverLines(t *testing.T) {
-	st, err := LoadStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := testStore(t)
 	lines := newServer(st).cover.Lines()
 	if len(lines) < 10 {
 		t.Fatalf("pool too small: %d", len(lines))
