@@ -36,11 +36,11 @@ func migrateFromJSON(path string, db *sql.DB) error {
 		Messages  []*legacyMessage         `json:"messages"`
 	}
 	var d struct {
-		Users        map[string]*User         `json:"users"`
-		Tokens       map[string]string        `json:"tokens"`
-		Convs        map[string]*legacyConv   `json:"convs"`
-		Images       map[string]imageRecord   `json:"images"`
-		CustomModels map[string]*CustomModel  `json:"custom_models"`
+		Users        map[string]*User        `json:"users"`
+		Tokens       map[string]string       `json:"tokens"`
+		Convs        map[string]*legacyConv  `json:"convs"`
+		Images       map[string]imageRecord  `json:"images"`
+		CustomModels map[string]*CustomModel `json:"custom_models"`
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -144,7 +144,7 @@ type Store interface {
 	ListModels(exceptUserID string) []modelInfo
 	AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error)
 	AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error)
-	RecentMessages(convID, userID string, afterTS int64) ([]*Message, error)
+	HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error)
 	CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error)
 	RoomMembers(convID, userID string) ([]string, error)
 	CreateCustomModel(ownerID, name, url string) (CustomModel, error)

@@ -334,12 +334,15 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
 	case len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet:
 		afterTS, _ := strconv.ParseInt(r.URL.Query().Get("after_ts"), 10, 64)
-		msgs, err := s.store.RecentMessages(convID, u.ID, afterTS)
+		beforeTS, _ := strconv.ParseInt(r.URL.Query().Get("before_ts"), 10, 64)
+		beforeID := r.URL.Query().Get("before_id")
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		msgs, err := s.store.HistoryMessages(convID, u.ID, afterTS, beforeTS, beforeID, limit)
 		if err != nil {
 			writeErr(w, statusOf(err), err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "has_more": beforeTS > 0 && len(msgs) == limit})
 	default:
 		http.NotFound(w, r)
 	}

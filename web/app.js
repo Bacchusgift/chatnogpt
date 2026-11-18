@@ -729,6 +729,9 @@ async function selectConv(id) {
       else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
       rememberRead(m.id);
     }
+    state.firstMsg = msgs.length ? { ts: msgs[0].ts, id: msgs[0].id } : null;
+    state.historyDone = msgs.length < 200;
+    state.historyLoading = false;
     scrollBottom(true);
     connectWS(id);
     $('#input').focus();
@@ -884,6 +887,57 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
     r.row.classList.add('covered');
     bindFlashlight(r.row);
   }
+}
+
+// 历史消息懒加载：滚动到顶部时按游标拉更早的 100 条，前插并保持滚动位置
+async function loadOlder() {
+  if (state.historyLoading || state.historyDone || !state.firstMsg) return;
+  if (!state.cur || state.cur.startsWith('novel:')) return;
+  state.historyLoading = true;
+  const sc = $('#msgScroll');
+  const before = sc.scrollHeight;
+  try {
+    const d = await api(`/api/conversations/${state.cur}/messages?before_ts=${state.firstMsg.ts}&before_id=${encodeURIComponent(state.firstMsg.id)}&limit=100`);
+    const older = d.messages || [];
+    if (!older.length) { state.historyDone = true; return; }
+    prependOlder(older);
+    state.firstMsg = { ts: older[0].ts, id: older[0].id };
+    if (older.length < 100) state.historyDone = true;
+    sc.scrollTop += sc.scrollHeight - before;
+  } catch (e) { toast(e.message); } finally { state.historyLoading = false; }
+}
+
+// 把更早的消息按升序前插（复用现有渲染函数，渲染后搬进文档碎片）
+function prependOlder(older) {
+  const box = $('#messages');
+  const first = box.firstChild;
+  const frag = document.createDocumentFragment();
+  let lastTS = -Infinity;
+  for (const m of older) {
+    if (lastTS !== -Infinity && m.ts - lastTS > 300) {
+      const div = document.createElement('div');
+      div.className = 'time-divider';
+      div.textContent = fmtDividerLabel(m.ts);
+      div.title = fullStamp(m.ts);
+      frag.appendChild(div);
+    }
+    lastTS = m.ts;
+    if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
+    else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+    rememberRead(m.id);
+    while (box.lastChild !== first && box.lastChild) frag.appendChild(box.lastChild);
+  }
+  if (first && first.classList && first.classList.contains('time-divider') === false && lastTS !== -Infinity) {
+    const firstTS = state.firstMsg ? state.firstMsg.ts : 0;
+    if (firstTS - lastTS > 300) {
+      const div = document.createElement('div');
+      div.className = 'time-divider';
+      div.textContent = fmtDividerLabel(firstTS);
+      div.title = fullStamp(firstTS);
+      frag.appendChild(div);
+    }
+  }
+  box.insertBefore(frag, first);
 }
 
 function scrollBottom(force) {
@@ -1467,6 +1521,7 @@ async function suggestName() {
 }
 
 function bind() {
+  const msgScrollEl = $('#msgScroll');
   const msgSearchInput = $('#msgSearch');
   $('#tabLogin').onclick = () => switchTab(true);
   $('#tabRegister').onclick = () => { switchTab(false); if (!$('#regName').value) suggestName(); };
@@ -1559,6 +1614,12 @@ function bind() {
   });
   msgSearchInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); runMessageSearch(); }
+  });
+
+  msgScrollEl.addEventListener('scroll', () => {
+    if (msgScrollEl.scrollTop > 120) return;
+    if (state.historyLoading || state.historyDone || !state.firstMsg) return;
+    loadOlder();
   });
 
   btnSend.onclick = send;

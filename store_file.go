@@ -22,26 +22,26 @@ type fileStore struct {
 }
 
 type fileData struct {
-	Users        map[string]*User      `json:"users"`
-	ByName       map[string]string     `json:"users_by_name"`
-	ByNick       map[string]string     `json:"users_by_nick"`
-	Tokens       map[string]string     `json:"tokens"`
-	ConvByCode   map[string]string     `json:"conv_by_code"`
-	Convs        map[string]*fileConv  `json:"convs"`
-	Images       map[string]imageRecord `json:"images"`
+	Users        map[string]*User        `json:"users"`
+	ByName       map[string]string       `json:"users_by_name"`
+	ByNick       map[string]string       `json:"users_by_nick"`
+	Tokens       map[string]string       `json:"tokens"`
+	ConvByCode   map[string]string       `json:"conv_by_code"`
+	Convs        map[string]*fileConv    `json:"convs"`
+	Images       map[string]imageRecord  `json:"images"`
 	CustomModels map[string]*CustomModel `json:"custom_models,omitempty"`
 }
 
 type fileConv struct {
-	ID        string                   `json:"id"`
-	Code      string                   `json:"code"`
-	Title     string                   `json:"title"`
-	CreatorID string                   `json:"creator_id"`
-	CreatedAt int64                    `json:"created_at"`
-	CreatedNS int64                    `json:"created_ns"`
-	Kind      int                      `json:"kind"`
-	Members   map[string]*Member       `json:"members"`
-	Messages  []*Message               `json:"messages"`
+	ID        string             `json:"id"`
+	Code      string             `json:"code"`
+	Title     string             `json:"title"`
+	CreatorID string             `json:"creator_id"`
+	CreatedAt int64              `json:"created_at"`
+	CreatedNS int64              `json:"created_ns"`
+	Kind      int                `json:"kind"`
+	Members   map[string]*Member `json:"members"`
+	Messages  []*Message         `json:"messages"`
 }
 
 func newFileStore(dir string) (*fileStore, error) {
@@ -79,7 +79,7 @@ func newFileStore(dir string) (*fileStore, error) {
 	return fs, nil
 }
 
-func (s *fileStore) Dir() string { return s.dir }
+func (s *fileStore) Dir() string  { return s.dir }
 func (s *fileStore) Close() error { return nil }
 
 func (s *fileStore) jsonPath() string { return filepath.Join(s.dir, "data.json") }
@@ -576,7 +576,7 @@ func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, cli
 	return m, nil
 }
 
-func (s *fileStore) RecentMessages(convID, userID string, afterTS int64) ([]*Message, error) {
+func (s *fileStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.d.Convs[convID]
@@ -586,11 +586,26 @@ func (s *fileStore) RecentMessages(convID, userID string, afterTS int64) ([]*Mes
 	if _, member := c.Members[userID]; !member {
 		return nil, ErrForbidden
 	}
-	const limit = 200
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
 	msgs := c.Messages
 	if afterTS > 0 {
 		idx := sort.Search(len(msgs), func(i int) bool { return msgs[i].TS > afterTS })
 		msgs = msgs[idx:]
+	}
+	if beforeTS > 0 {
+		end := len(msgs)
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].TS < beforeTS || (msgs[i].TS == beforeTS && (beforeID == "" || msgs[i].ID < beforeID)) {
+				end = i + 1
+				break
+			}
+			if i == 0 {
+				end = 0
+			}
+		}
+		msgs = msgs[:end]
 	}
 	if len(msgs) > limit {
 		msgs = msgs[len(msgs)-limit:]

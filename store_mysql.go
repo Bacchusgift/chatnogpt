@@ -409,10 +409,10 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 	defer rows.Close()
 	out := []convSummary{}
 	type row0 struct {
-		id, title, code    string
-		kind               int
-		createdAt, lastTS  int64
-		memberCount        int
+		id, title, code   string
+		kind              int
+		createdAt, lastTS int64
+		memberCount       int
 	}
 	for rows.Next() {
 		var r row0
@@ -656,9 +656,10 @@ func (s *dbStore) messageByClientID(convID, clientMsgID string) *Message {
 	return &m
 }
 
-// RecentMessages returns the latest messages in ascending order, optionally
-// only those newer than afterTS (used by clients to resync after a reconnect).
-func (s *dbStore) RecentMessages(convID, userID string, afterTS int64) ([]*Message, error) {
+// HistoryMessages returns messages in ascending order. afterTS>0 keeps only
+// newer messages (reconnect resync); beforeTS>0 with beforeID pages older
+// history (lazy loading). limit<=0 defaults to 200.
+func (s *dbStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error) {
 	var one int
 	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
 		convID, userID).Scan(&one); err != nil {
@@ -667,8 +668,19 @@ func (s *dbStore) RecentMessages(convID, userID string, afterTS int64) ([]*Messa
 		}
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'')
-		FROM messages WHERE conv_id=? AND (?=0 OR ts>?) ORDER BY ts DESC LIMIT 200`, convID, afterTS, afterTS)
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	var rows *sql.Rows
+	var err error
+	if beforeTS > 0 {
+		rows, err = s.db.Query(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'')
+			FROM messages WHERE conv_id=? AND (ts<? OR (ts=? AND id<?))
+			ORDER BY ts DESC, id DESC LIMIT ?`, convID, beforeTS, beforeTS, beforeID, limit)
+	} else {
+		rows, err = s.db.Query(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'')
+			FROM messages WHERE conv_id=? AND ts>? ORDER BY ts DESC LIMIT ?`, convID, afterTS, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

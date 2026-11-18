@@ -205,8 +205,9 @@ func (c *wsConn) readMessage() (byte, []byte, error) {
 			assembled = append(assembled, payload...)
 		case opPing:
 			_ = c.writeFrame(opPong, payload)
+			c.setReadDeadline(time.Now().Add(wsReadTimeout)) // 心跳响应也要续期读超时，否则纯 pong 连接 90s 必断
 		case opPong:
-			// nothing to do; the deadline reset is enough
+			c.setReadDeadline(time.Now().Add(wsReadTimeout))
 		case opClose:
 			_ = c.writeFrame(opClose, nil)
 			return 0, nil, io.EOF
