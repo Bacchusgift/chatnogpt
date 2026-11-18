@@ -1,0 +1,15 @@
+{
+  "name": "chatnogpt-desktop",
+  "productName": "ChatNoGPT",
+  "version": "1.0.0",
+  "description": "ChatNoGPT 桌面客户端：系统托盘驻留 + 原生系统通知",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-packager . ChatNoGPT --platform=win32 --arch=x64 --out dist --overwrite --icon icon.ico --ignore=\"^/dist\""
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-packager": "^17.1.2"
+  }
+}

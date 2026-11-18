@@ -25,6 +25,12 @@ chatnogpt -db-dsn "chatnogpt_prod:密码@tcp(127.0.0.1:3306)/chatnogpt_prod?char
 chatnogpt -db-dsn "..." -migrate-from data/data.json
 ```
 
+## 桌面客户端（Electron，可选）
+
+`desktop/` 目录提供 Windows 便携版桌面壳：独立窗口、关闭后驻留系统托盘
+（后台继续接收消息，弹出原生系统通知）、单实例、外链走系统浏览器。
+开发与打包见 [desktop/README.md](desktop/README.md)。
+
 ## 多站点皮肤
 
 除仿 ChatGPT 主站外，同一后端还内置五套前端皮肤（`sites/` 目录）。
