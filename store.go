@@ -34,9 +34,10 @@ type User struct {
 }
 
 type Member struct {
-	UserID   string `json:"user_id"`
-	Title    string `json:"title"` // 每个成员给会话自己取的名字
-	JoinedAt int64  `json:"joined_at"`
+	UserID      string `json:"user_id"`
+	Title       string `json:"title"` // 每个成员给会话自己取的名字
+	JoinedAt    int64  `json:"joined_at"`
+	UnreadCount int    `json:"unread_count,omitempty"`
 }
 
 type Message struct {
@@ -73,6 +74,7 @@ type convSummary struct {
 	MemberCount  int    `json:"member_count"`
 	CreatedAt    int64  `json:"created_at"`
 	LastTS       int64  `json:"last_ts"`
+	UnreadCount  int    `json:"unread_count"`
 	PeerID       string `json:"peer_id,omitempty"`
 	PeerNickname string `json:"peer_nickname,omitempty"`
 }
@@ -463,7 +465,8 @@ func (s *Store) ListConvs(userID string) []convSummary {
 		out = append(out, convSummary{
 			ID: c.ID, Title: m.Title, Code: c.Code,
 			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last,
-			PeerID: peerID, PeerNickname: peerNick,
+			UnreadCount: m.UnreadCount,
+			PeerID:      peerID, PeerNickname: peerNick,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -679,12 +682,36 @@ func (s *Store) AddMessageWithImage(convID, senderID, nickname, content, clientM
 		Content: content, TS: now(), ClientMsgID: clientMsgID, ImageID: imageID,
 	}
 	c.Messages = append(c.Messages, m)
+	for id, member := range c.Members {
+		if id != senderID {
+			member.UnreadCount++
+		}
+	}
 	const maxHistory = 5000
 	if len(c.Messages) > maxHistory {
 		c.Messages = c.Messages[len(c.Messages)-maxHistory:]
 	}
 	s.saveLocked()
 	return m, nil
+}
+
+// MarkConvRead clears the recipient's unread count when they view the conversation.
+func (s *Store) MarkConvRead(convID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return ErrNotFound
+	}
+	member, ok := c.Members[userID]
+	if !ok {
+		return ErrForbidden
+	}
+	if member.UnreadCount != 0 {
+		member.UnreadCount = 0
+		s.saveLocked()
+	}
+	return nil
 }
 
 // RecentMessages returns the latest messages in ascending order, optionally

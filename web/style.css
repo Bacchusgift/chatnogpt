@@ -68,10 +68,13 @@ input, textarea { font: inherit; color: inherit; }
 }
 .conv-item:hover { background: #262626; }
 .conv-item.active { background: #323232; }
-.conv-item { position: relative; padding-right: 30px; }
-.conv-dot {
-  position: absolute; right: 11px; top: 50%; width: 8px; height: 8px; margin-top: -4px;
-  border-radius: 50%; background: #3ddc97; box-shadow: 0 0 8px rgba(61,220,151,.55);
+.conv-item { position: relative; padding-right: 48px; }
+.conv-unread {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 999px; background: #ef4444; color: white;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; line-height: 1;
 }
 .conv-empty { color: #8e8e8e; font-size: 13px; padding: 8px 10px; }
 .side-foot { border-top: 1px solid #2a2a2a; padding-top: 10px; }
@@ -178,9 +181,21 @@ body.cover-on .novel-browser[data-reveal-mode="setup"] .novel-reveal-setup { dis
 .chat-image { display: block; max-width: min(360px, 100%); max-height: 320px; border-radius: 12px; object-fit: contain; cursor: zoom-in; margin-top: 6px; }
 .bubble .chat-image { max-width: 100%; }
 body.cover-on .msg-ai.covered .chat-image { cursor: default; }
-.image-preview { display: flex; align-items: center; gap: 10px; padding: 8px; font-size: 13px; }
-.image-preview img { max-width: 90px; max-height: 80px; border-radius: 8px; }
-.image-preview button { color: #ddd; padding: 5px; }
+.image-preview {
+  display: flex; align-items: flex-end; gap: 12px;
+  min-height: 132px; padding: 4px 4px 12px;
+  font-size: 12px; color: #b7b7b7;
+}
+.image-preview img {
+  display: block; max-width: 160px; max-height: 120px;
+  border-radius: 10px; object-fit: contain;
+  background: #242424; border: 1px solid rgba(255,255,255,.1);
+}
+.image-preview button {
+  color: #ddd; padding: 5px 8px; border-radius: 8px;
+  background: #3b3b3b;
+}
+.image-preview button:hover { background: #4a4a4a; }
 .picker-overlay { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .picker-panel { width: min(420px, 100%); max-height: 75vh; overflow-y: auto; background: #2f2f2f; border-radius: 16px; padding: 20px; }
 .picker-panel h2 { margin: 0 0 14px; font-size: 18px; }
@@ -301,6 +316,7 @@ body.cover-on .msg-real.covered.flash::after {
   padding: 12px 12px 10px 16px;
   box-shadow: 0 2px 16px rgba(0,0,0,.25);
 }
+.composer.has-image { padding-top: 16px; }
 #input {
   width: 100%; border: 0; outline: none; resize: none; background: transparent;
   max-height: 180px; line-height: 1.6; padding: 2px 4px 8px; color: #ececec;

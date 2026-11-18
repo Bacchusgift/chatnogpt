@@ -25,7 +25,6 @@ const state = {
   lastTS: 0,          // 当前聊天已收到的最大时间戳（断线补拉用）
   lastRenderTS: 0,    // 当前聊天已渲染的最大时间戳（时间分割线用）
   unread: 0,          // 页签隐藏期间累计的新消息数（标题计数）
-  unreadConvs: new Set(), // 有未读消息的会话 id（侧栏绿点，按账号存本地）
   baseTitle: '',      // 页面原始标题
   queue: [],          // 等待播放的消息
   animating: false,
@@ -97,40 +96,48 @@ function resetUnread() {
   }
 }
 
-function unreadStorageKey() {
-  return `cngp_unread_${state.me.id}`;
+function unreadBadgeEl(count) {
+  const badge = document.createElement('span');
+  badge.className = 'conv-unread';
+  badge.textContent = count > 99 ? '99+' : String(count);
+  badge.setAttribute('aria-label', `${count} 条未读消息`);
+  return badge;
 }
 
-function loadUnreadConvs() {
+let notificationAudio;
+function unlockNotificationSound() {
   try {
-    const ids = JSON.parse(localStorage.getItem(unreadStorageKey()) || '[]');
-    return new Set(Array.isArray(ids) ? ids.filter(x => typeof x === 'string') : []);
-  } catch { return new Set(); }
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return;
+    notificationAudio ||= new Audio();
+    if (notificationAudio.state === 'suspended') notificationAudio.resume().catch(() => {});
+  } catch {}
+}
+function playNotificationSound() {
+  try {
+    const Audio = window.AudioContext || window.webkitAudioContext;
+    if (!Audio) return;
+    if (notificationAudio.state !== 'running') return;
+    const start = notificationAudio.currentTime;
+    const oscillator = notificationAudio.createOscillator();
+    const gain = notificationAudio.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(740, start);
+    oscillator.frequency.setValueAtTime(920, start + .08);
+    gain.gain.setValueAtTime(.0001, start);
+    gain.gain.exponentialRampToValueAtTime(.08, start + .015);
+    gain.gain.exponentialRampToValueAtTime(.0001, start + .22);
+    oscillator.connect(gain).connect(notificationAudio.destination);
+    oscillator.start(start);
+    oscillator.stop(start + .23);
+  } catch {}
 }
 
-function saveUnreadConvs() {
-  try { localStorage.setItem(unreadStorageKey(), JSON.stringify(Array.from(state.unreadConvs))); } catch {}
-}
-
-function convDotEl() {
-  const i = document.createElement('i');
-  i.className = 'conv-dot';
-  return i;
-}
-
-// 侧栏绿点：收到消息且还没打开该会话时点亮，打开后清除；按账号持久化。
-function markUnread(id) {
-  if (!id || !state.me || state.unreadConvs.has(id)) return;
-  state.unreadConvs.add(id);
-  saveUnreadConvs();
-  const b = document.querySelector(`#convList .conv-item[data-id="${CSS.escape(id)}"]`);
-  if (b && !b.querySelector('.conv-dot')) b.appendChild(convDotEl());
-}
-
-function clearUnread(id) {
-  if (!id || !state.unreadConvs.delete(id)) return;
-  saveUnreadConvs();
-  document.querySelector(`#convList .conv-item[data-id="${CSS.escape(id)}"] .conv-dot`)?.remove();
+async function markConversationRead(id) {
+  if (!id || !state.me || document.hidden) return;
+  const c = state.convs.find(c => c.id === id);
+  if (c && c.unread_count) { c.unread_count = 0; renderConvList(); }
+  try { await api(`/api/conversations/${encodeURIComponent(id)}/read`, { method: 'POST' }); } catch {}
 }
 
 // 新消息提醒：标题计数 + 浏览器系统通知；onScreen 表示消息正显示在当前会话里，
@@ -143,8 +150,8 @@ function notifyMessage(convID, title, body, onScreen = false) {
       n.onclick = () => {
         window.focus();
         resetUnread();
-        clearUnread(convID);
         if (convID !== state.cur) selectConv(convID);
+        else markConversationRead(convID);
         n.close();
       };
     }
@@ -370,7 +377,6 @@ function showApp() {
   // 恢复上次选择的思考强度
   $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
-  state.unreadConvs = loadUnreadConvs();
   if (!state.cur) {
     $('#messages').replaceChildren();
     appendWelcome('ChatNoGPT');
@@ -391,7 +397,6 @@ function doLogoutLocal() {
   state.queue = [];
   state.animating = false;
   state.readIDs = new Set();
-  state.unreadConvs = new Set();
   state.seenMsg.clear();
   state.pending.clear();
   state.wsConv = null;
@@ -415,14 +420,15 @@ function doLogoutLocal() {
 async function loadConvs(silent = false) {
   try {
     const d = await api('/api/conversations');
-    const prevTS = new Map(state.convs.map(c => [c.id, c.last_ts || 0]));
+    const hadConvs = state.convs.length > 0;
+    const prevUnread = new Map(state.convs.map(c => [c.id, c.unread_count || 0]));
     state.convs = d.conversations || [];
-    // WS 只订阅当前聊天；侧栏轮询顺带探测其他聊天的新消息（含别人新发起的聊天）
-    if (prevTS.size) {
-      for (const c of state.convs) {
-        if (c.id !== state.cur && (c.last_ts || 0) > (prevTS.get(c.id) || 0)) {
-          markUnread(c.id);
+    // 服务端未读数只计入别人发的消息，轮询可发现其他会话和其他设备上的变化。
+    for (const c of state.convs) {
+      if (hadConvs && (c.unread_count || 0) > (prevUnread.get(c.id) || 0)) {
+        if (c.id !== state.cur || document.hidden) {
           notifyMessage(c.id, c.title, '收到新消息');
+          playNotificationSound();
         }
       }
     }
@@ -447,7 +453,7 @@ function renderConvList() {
     b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
     b.dataset.id = c.id;
     b.textContent = c.title;
-    if (state.unreadConvs.has(c.id)) b.appendChild(convDotEl());
+    if (c.unread_count > 0) b.appendChild(unreadBadgeEl(c.unread_count));
     b.title = c.title + '（双击修改标题）';
     b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
     b.ondblclick = () => renameConv(c.id, c.title);
@@ -538,7 +544,6 @@ async function selectConv(id) {
   state.gen++;
   const gen = state.gen;
   state.readIDs = loadReadIDs(id);
-  clearUnread(id);
   state.queue = [];
   state.animating = false;
   state.pending.clear();
@@ -577,6 +582,7 @@ async function selectConv(id) {
       else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
       rememberRead(m.id);
     }
+    markConversationRead(id);
     scrollBottom(true);
     connectWS(id);
     $('#input').focus();
@@ -807,9 +813,10 @@ async function syncMissed(id) {
       }
       scrollFollow();
       if (m.sender_id !== state.me.id && document.hidden) {
-        // 断线重连补拉的消息也要提醒：绿点 + 系统通知 + 标题计数
-        markUnread(state.cur);
+        const c = state.convs.find(c => c.id === id);
+        if (c) { c.unread_count = (c.unread_count || 0) + 1; renderConvList(); }
         notifyMessage(state.cur, m.nickname, state.coverMode ? '收到新回复，点击查看' : m.content, true);
+        playNotificationSound();
       }
     }
   } catch {}
@@ -848,8 +855,13 @@ function handleEvent(ev) {
       }
       hideTyping();
       enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts, msgKeyOf(ev.id, ev.nickname, ev.content), true, ev.image_id);
-      // 页签在后台时：绿点 + 系统通知 + 标题计数；可见时消息已在眼前，不重复提醒
-      if (document.hidden) markUnread(state.cur);
+      if (document.hidden) {
+        const c = state.convs.find(c => c.id === state.cur);
+        if (c) { c.unread_count = (c.unread_count || 0) + 1; renderConvList(); }
+        playNotificationSound();
+      } else {
+        markConversationRead(state.cur);
+      }
       notifyMessage(state.cur, ev.nickname, state.coverMode ? '收到新回复，点击查看' : ev.content, true);
     }
   } else if (ev.type === 'typing') {
@@ -1146,6 +1158,7 @@ function removeAttachment() {
   state.attachment = null;
   $('#imagePreview').replaceChildren();
   $('#imagePreview').classList.add('hidden');
+  $('.composer').classList.remove('has-image');
   $('#imageInput').value = '';
   updateSendButton();
 }
@@ -1170,6 +1183,8 @@ async function attachImage(file) {
     remove.onclick = removeAttachment;
     box.replaceChildren(img, size, remove);
     box.classList.remove('hidden');
+    $('.composer').classList.add('has-image');
+    input.focus();
     updateSendButton();
   } catch (e) {
     if (request === attachmentRequest) toast(e.message);
@@ -1392,7 +1407,7 @@ function bind() {
   });
 
   btnSend.onclick = send;
-  input.addEventListener('paste', e => {
+  $('.composer').addEventListener('paste', e => {
     const data = e.clipboardData;
     const item = Array.from(data?.items || []).find(entry => entry.type.startsWith('image/'));
     const file = item?.getAsFile() || Array.from(data?.files || []).find(entry => entry.type.startsWith('image/'));
@@ -1421,17 +1436,18 @@ function bind() {
 
 async function init() {
   bind();
+  document.addEventListener('pointerdown', unlockNotificationSound, { once: true });
+  document.addEventListener('keydown', unlockNotificationSound, { once: true });
   state.baseTitle = document.title;
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       resetUnread();
-      // 回到页签时正在看的会话即已读，绿点随之消失
-      if (state.cur) clearUnread(state.cur);
+      if (state.cur && !state.cur.startsWith('novel:')) markConversationRead(state.cur);
     }
   });
   window.addEventListener('focus', () => {
     resetUnread();
-    if (state.cur) clearUnread(state.cur);
+    if (state.cur && !state.cur.startsWith('novel:')) markConversationRead(state.cur);
   });
   // 轮询聊天列表：别人发来的新聊天会自动出现在侧栏。
   // 页签隐藏时降为每 15s 一次，保证后台仍能触发新消息通知
