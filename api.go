@@ -281,6 +281,26 @@ func (s *server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"conversation": brief, "missing": missing})
 }
 
+// handleSearch finds messages across the user's conversations (database mode).
+func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"hits": []SearchHit{}})
+		return
+	}
+	hits, err := s.store.SearchMessages(u.ID, q, 50)
+	if err != nil {
+		writeErr(w, statusOf(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
+}
+
 func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 	u := s.authUser(r)
 	if u == nil {

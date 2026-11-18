@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -103,12 +104,12 @@ func frontendForRequest(r *http.Request) fs.FS {
 }
 
 type server struct {
-	store *Store
+	store Store
 	hub   *hub
 	cover *coverStore
 }
 
-func newServer(st *Store) *server {
+func newServer(st Store) *server {
 	return &server{store: st, hub: newHub(), cover: &coverStore{lines: builtinCoverLines}}
 }
 
@@ -129,28 +130,44 @@ func main() {
 	_ = mime.AddExtensionType(".css", "text/css; charset=utf-8")
 	_ = mime.AddExtensionType(".svg", "image/svg+xml")
 
+	var store Store
+	var err error
 	dsn := *dbDsn
 	if dsn == "" {
 		dsn = os.Getenv("CHATNOGPT_DB_DSN")
 	}
-	if dsn == "" {
-		log.Fatal("缺少数据库配置：用 -db-dsn 或环境变量 CHATNOGPT_DB_DSN 提供 MariaDB DSN")
-	}
-	store, err := OpenStore(dsn, *dataDir)
-	if err != nil {
-		log.Fatalf("open store: %v", err)
-	}
-	if *freshDB {
-		if err := store.Fresh(); err != nil {
-			log.Fatalf("fresh db: %v", err)
+	if dsn != "" {
+		store, err = OpenStore(dsn, *dataDir)
+		if err != nil {
+			log.Fatalf("open database store: %v", err)
 		}
-	}
-	if *migrateFrom != "" {
-		if err := migrateFromJSON(*migrateFrom, store); err != nil {
-			log.Fatalf("migrate %s: %v", *migrateFrom, err)
+		if *freshDB {
+			if err := store.Fresh(); err != nil {
+				log.Fatalf("fresh db: %v", err)
+			}
 		}
-		log.Printf("migrated %s into the database", *migrateFrom)
-		return
+		if *migrateFrom != "" {
+			if err := migrateFromJSON(*migrateFrom, store.(*dbStore).DB()); err != nil {
+				log.Fatalf("migrate %s: %v", *migrateFrom, err)
+			}
+			log.Printf("migrated %s into the database", *migrateFrom)
+			return
+		}
+		log.Printf("database storage enabled (MariaDB/MySQL)")
+	} else {
+		if *migrateFrom != "" {
+			log.Fatal("-migrate-from 需要数据库模式：用 -db-dsn 或 CHATNOGPT_DB_DSN 提供连接")
+		}
+		store, err = OpenFileStore(*dataDir)
+		if err != nil {
+			log.Fatalf("open file store: %v", err)
+		}
+		if *freshDB {
+			if err := store.Fresh(); err != nil {
+				log.Fatalf("fresh data: %v", err)
+			}
+		}
+		log.Printf("no database configured - using local file storage (%s)", filepath.Join(*dataDir, "data.json"))
 	}
 	srv := newServer(store)
 
@@ -200,6 +217,7 @@ func buildMux(s *server) http.Handler {
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
 	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
 	mux.HandleFunc("/api/rooms", s.handleRooms)
+	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/conversations/join", s.handleJoinConv)
 	mux.HandleFunc("/api/conversations/with", s.handleConvWith)
 	mux.HandleFunc("/api/conversations/new", s.handleConvNew)

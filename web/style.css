@@ -58,6 +58,11 @@ input, textarea { font: inherit; color: inherit; }
 .brand { font-weight: 700; font-size: 15px; padding: 6px 8px 14px; color: #fff; letter-spacing: -.3px; }
 .side-new { width: 100%; padding: 10px; border-radius: 10px; text-align: left; color: #ececec; font-size: 14px; border: 1px solid #414141; }
 .side-new:hover { background: #2b2b2b; }
+#msgSearch {
+  margin: 6px 10px 2px; width: calc(100% - 20px);
+  padding: 8px 10px; background: #1e1e1e; color: #ececec;
+  border: 1px solid #3a3a3a; border-radius: 8px; font-size: 13px;
+}
 #convList { flex: 1; overflow-y: auto; margin-top: 6px; }
 .conv-item {
   display: block; width: 100%; text-align: left;
@@ -68,6 +73,9 @@ input, textarea { font: inherit; color: inherit; }
 }
 .conv-item:hover { background: #262626; }
 .conv-item.active { background: #323232; }
+.conv-item.search-hit { height: auto; padding: 8px 30px 8px 10px; }
+.search-hit div:first-child { font-weight: 600; margin-bottom: 2px; }
+.search-snippet { font-size: 12px; color: #9a9a9a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-item { position: relative; padding-right: 30px; }
 .conv-dot {
   position: absolute; right: 11px; top: 50%; width: 8px; height: 8px; margin-top: -4px;

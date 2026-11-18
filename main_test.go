@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -35,21 +36,24 @@ func testDSN(t *testing.T) string {
 	return ""
 }
 
-func openTestStore(t *testing.T) *Store {
+func openTestStore(t *testing.T) Store {
 	t.Helper()
-	dsn := testDSN(t)
-	if dsn == "" {
-		t.Skip("需要 MySQL 测试库：设置 CHATNOGPT_TEST_DSN 或创建 data/conf/chatnogpt_test.env")
+	if dsn := testDSN(t); dsn != "" {
+		st, err := OpenStore(dsn, t.TempDir())
+		if err != nil {
+			t.Fatalf("open database store: %v", err)
+		}
+		t.Cleanup(func() { st.Close() })
+		return st
 	}
-	st, err := OpenStore(dsn, t.TempDir())
+	st, err := OpenFileStore(t.TempDir())
 	if err != nil {
-		t.Fatalf("open store: %v", err)
+		t.Fatalf("open file store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 	return st
 }
 
-func testStore(t *testing.T) *Store {
+func testStore(t *testing.T) Store {
 	t.Helper()
 	st := openTestStore(t)
 	if err := st.Fresh(); err != nil {
@@ -526,5 +530,47 @@ func TestBuiltinCoverLines(t *testing.T) {
 	lines[0] = "modified"
 	if newServer(st).cover.Lines()[0] != builtinCoverLines[0] {
 		t.Fatal("cover lines must be isolated from callers")
+	}
+}
+
+func TestSearchMessages(t *testing.T) {
+	st := testStore(t)
+	a, _, err := st.Register("search-a", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := st.Register("search-b", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, err := st.NewConvWith(a.ID, b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddMessage(conv.ID, b.ID, "search-b", "数据库里藏着一个独特关键词斑马象", ""); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := st.SearchMessages(a.ID, "斑马象", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ConvID != conv.ID || !strings.Contains(hits[0].Message.Content, "斑马象") {
+		t.Fatalf("hits = %+v", hits)
+	}
+	outsider, _, err := st.Register("search-c", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits, _ := st.SearchMessages(outsider.ID, "斑马象", 10); len(hits) != 0 {
+		t.Fatal("outsider should not see other conversations")
+	}
+
+	// 文件后端不支持搜索：应明确返回 ErrNoDatabase
+	fileStore, err := OpenFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileStore.SearchMessages("x", "y", 5); err == nil || !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("file search err = %v", err)
 	}
 }

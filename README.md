@@ -6,15 +6,20 @@ ChatGPT 的样子——左侧平铺 + 昵称标签 + 打字机逐字输出 + "�
 
 **单一 Go 二进制**（WebSocket 是标准库实现的，MySQL 访问用纯 Go 驱动
 `go-sql-driver/mysql`），前端全部通过 `go:embed` 内嵌，编译出来一个 exe，双击即用。
-数据存放在 MariaDB/MySQL，启动需要 `-db-dsn` 或环境变量 `CHATNOGPT_DB_DSN`：
+
+**存储双模式**：默认把数据持久化到数据目录的 `data.json`（零配置即可运行）；
+配置数据库后切换到 MariaDB/MySQL，并解锁依赖数据库的能力（如跨会话消息搜索）：
 
 ```bash
+# 文件模式（默认，零配置）
+chatnogpt -data data
+
+# 数据库模式（生产环境：数据库与应用同机，127.0.0.1 连接）
 chatnogpt -db-dsn "chatnogpt_prod:密码@tcp(127.0.0.1:3306)/chatnogpt_prod?charset=utf8mb4" -data data
 ```
 
-生产环境建议数据库与应用同机（127.0.0.1）；开发/测试环境用外网域名连接独立的
-dev/test 库，凭据放在 gitignore 的本地配置里，不入仓库。首次启动自动建表
-（CREATE TABLE IF NOT EXISTS）；旧版 JSON 数据一键迁移：
+开发/测试环境可用外网域名连接独立的 dev/test 库，凭据放在 gitignore 的本地配置里，
+不入仓库。首次连接自动建表（CREATE TABLE IF NOT EXISTS）；旧版 JSON 数据一键迁入数据库：
 
 ```bash
 chatnogpt -db-dsn "..." -migrate-from data/data.json

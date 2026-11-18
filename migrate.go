@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"strings"
@@ -9,7 +10,7 @@ import (
 // migrateFromJSON imports a legacy data.json store (pre-database format)
 // into the MySQL schema, preserving every id, timestamp and token so users
 // stay logged in and history keeps its order.
-func migrateFromJSON(path string, st *Store) error {
+func migrateFromJSON(path string, db *sql.DB) error {
 	type legacyMember struct {
 		UserID   string `json:"user_id"`
 		Title    string `json:"title"`
@@ -48,7 +49,7 @@ func migrateFromJSON(path string, st *Store) error {
 	if err := json.Unmarshal(b, &d); err != nil {
 		return err
 	}
-	tx, err := st.db.Begin()
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}

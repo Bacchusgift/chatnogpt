@@ -431,9 +431,45 @@ async function loadConvs(silent = false) {
   } catch (e) { if (!silent) toast(e.message); }
 }
 
+let searchHits = null;
+
+async function runMessageSearch() {
+  const q = $('#msgSearch').value.trim();
+  if (!q) { searchHits = null; renderConvList(); return; }
+  try {
+    const d = await api('/api/search?q=' + encodeURIComponent(q));
+    searchHits = d.hits || [];
+    renderConvList();
+  } catch (e) { toast(e.message); }
+}
+
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
+  if (searchHits) {
+    const head = document.createElement('div');
+    head.className = 'conv-empty';
+    head.textContent = '搜索结果 ' + searchHits.length + ' 条（清空搜索框返回）';
+    list.appendChild(head);
+    for (const hit of searchHits) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'conv-item search-hit';
+      const t = document.createElement('div');
+      t.textContent = hit.title;
+      const snippet = document.createElement('div');
+      snippet.className = 'search-snippet';
+      const content = hit.message.content || '';
+      const at = content.toLowerCase().indexOf($('#msgSearch').value.trim().toLowerCase());
+      snippet.textContent = at >= 0
+        ? content.slice(Math.max(0, at - 16), at + 44)
+        : content.slice(0, 60);
+      b.append(t, snippet);
+      b.onclick = () => { selectConv(hit.conv_id); closeSidebarMobile(); };
+      list.appendChild(b);
+    }
+    return;
+  }
   if (!state.convs.length && !novelModels.length) {
     const p = document.createElement('div');
     p.className = 'conv-empty';
@@ -1361,6 +1397,7 @@ async function suggestName() {
 }
 
 function bind() {
+  const msgSearchInput = $('#msgSearch');
   $('#tabLogin').onclick = () => switchTab(true);
   $('#tabRegister').onclick = () => { switchTab(false); if (!$('#regName').value) suggestName(); };
   $('#btnRerollName').onclick = suggestName;
@@ -1445,6 +1482,13 @@ function bind() {
     if (!modelMenu.contains(e.target) && !modelBtn.contains(e.target)) closeModelMenu();
     if (!accessMenu.contains(e.target) && !accessBtn.contains(e.target)) accessMenu.classList.add('hidden');
     if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
+  });
+
+  msgSearchInput.addEventListener('input', () => {
+    if (!msgSearchInput.value.trim()) { searchHits = null; renderConvList(); }
+  });
+  msgSearchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); runMessageSearch(); }
   });
 
   btnSend.onclick = send;
