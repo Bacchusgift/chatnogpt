@@ -731,6 +731,24 @@ func (s *fileStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error
 	return &copyM, nil
 }
 
+func (s *fileStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.d.CustomModels[modelID]
+	if m == nil || m.OwnerID != ownerID {
+		return ErrNotFound
+	}
+	if m.URL == modelURL {
+		return nil
+	}
+	m.URL = modelURL
+	m.Position = 0
+	m.ChapterID = ""
+	m.ChapterOffset = 0
+	s.saveLocked()
+	return nil
+}
+
 func (s *fileStore) SaveCustomModelText(modelID, ownerID, text string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

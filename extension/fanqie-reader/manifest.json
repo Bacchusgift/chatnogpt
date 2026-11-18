@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "ChatNoGPT 番茄阅读桥接",
-  "version": "0.1.0",
-  "description": "把已登录的番茄章节显示在本机 ChatNoGPT 阅读面板中。",
+  "name": "ChatNoGPT 阅读桥接",
+  "version": "0.2.1",
+  "description": "把已登录的来源网站章节显示在 ChatNoGPT 阅读面板中。",
   "permissions": ["tabs", "scripting"],
   "host_permissions": [
     "https://fanqienovel.com/*",
+    "https://www.jjwxc.net/*",
+    "https://jjwxc.net/*",
+    "https://chatnogpt.autowired.cn/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
@@ -17,7 +20,12 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "matches": ["https://www.jjwxc.net/*", "https://jjwxc.net/*"],
+      "js": ["jinjiang.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*", "https://chatnogpt.autowired.cn/*"],
       "js": ["chat.js"],
       "run_at": "document_idle"
     }

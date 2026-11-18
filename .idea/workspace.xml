@@ -4,11 +4,15 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="f64432bb-8e02-4112-bd8c-6c049628ffc9" name="更改" comment="update：更新详细时间显示，加入小说阅读功能，小说模拟功能">
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+    <list default="true" id="f64432bb-8e02-4112-bd8c-6c049628ffc9" name="更改" comment="update：更新红点提示，提示音，扩大图片预览，修改小说阅读模式的模拟">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/custom_models.go" beforeDir="false" afterPath="$PROJECT_DIR$/custom_models.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/extension/fanqie-reader/background.js" beforeDir="false" afterPath="$PROJECT_DIR$/extension/fanqie-reader/background.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/extension/fanqie-reader/chat.js" beforeDir="false" afterPath="$PROJECT_DIR$/extension/fanqie-reader/chat.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/extension/fanqie-reader/manifest.json" beforeDir="false" afterPath="$PROJECT_DIR$/extension/fanqie-reader/manifest.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/web/app.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/store.go" beforeDir="false" afterPath="$PROJECT_DIR$/store.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/store_file.go" beforeDir="false" afterPath="$PROJECT_DIR$/store_file.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/store_mysql.go" beforeDir="false" afterPath="$PROJECT_DIR$/store_mysql.go" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/web/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/web/index.html" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/web/novel.js" beforeDir="false" afterPath="$PROJECT_DIR$/web/novel.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/web/style.css" beforeDir="false" afterPath="$PROJECT_DIR$/web/style.css" afterDir="false" />
@@ -88,7 +92,15 @@
       <option name="project" value="LOCAL" />
       <updated>1794907490367</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="update：更新红点提示，提示音，扩大图片预览，修改小说阅读模式的模拟">
+      <option name="closed" value="true" />
+      <created>1794987185470</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1794987185470</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -107,6 +119,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="update：更新详细时间显示，加入小说阅读功能，小说模拟功能" />
-    <option name="LAST_COMMIT_MESSAGE" value="update：更新详细时间显示，加入小说阅读功能，小说模拟功能" />
+    <MESSAGE value="update：更新红点提示，提示音，扩大图片预览，修改小说阅读模式的模拟" />
+    <option name="LAST_COMMIT_MESSAGE" value="update：更新红点提示，提示音，扩大图片预览，修改小说阅读模式的模拟" />
   </component>
 </project>

@@ -10,6 +10,15 @@ import (
 	"unicode/utf8"
 )
 
+func validCustomModelURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") &&
+		parsed.Host != "" && parsed.User == nil && len(raw) <= 2048
+}
+
 func (s *server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
 	u := s.authUser(r)
 	if u == nil {
@@ -39,12 +48,9 @@ func (s *server) handleCustomModels(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, errors.New("模型名称需为 1–40 个字"))
 			return
 		}
-		if req.URL != "" {
-			parsed, err := url.Parse(req.URL)
-			if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || len(req.URL) > 2048 {
-				writeErr(w, 400, errors.New("请输入有效的 http 或 https 小说链接"))
-				return
-			}
+		if !validCustomModelURL(req.URL) {
+			writeErr(w, 400, errors.New("请输入有效的 http 或 https 模型链接"))
+			return
 		}
 		m, err := s.store.CreateCustomModel(u.ID, req.Name, req.URL)
 		if err != nil {
@@ -70,6 +76,26 @@ func (s *server) handleCustomModelSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelID := parts[0]
+	if parts[1] == "url" && r.Method == http.MethodPut {
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		req.URL = strings.TrimSpace(req.URL)
+		if !validCustomModelURL(req.URL) {
+			writeErr(w, 400, errors.New("请输入有效的 http 或 https 模型链接"))
+			return
+		}
+		if err := s.store.SaveCustomModelURL(modelID, u.ID, req.URL); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
 	if parts[1] == "next" && r.Method == http.MethodPost {
 		s.handleCustomNext(w, u.ID, modelID)
 		return

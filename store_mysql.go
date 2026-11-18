@@ -453,7 +453,9 @@ func (s *dbStore) MarkConvRead(convID, userID string) error {
 	if n == 0 {
 		var exists int
 		if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?", convID, userID).Scan(&exists); err != nil {
-			if errors.Is(err, sql.ErrNoRows) { return ErrNotFound }
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
 			return err
 		}
 	}
@@ -819,6 +821,19 @@ func (s *dbStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error) 
 	}
 	m.Text = text.String
 	return &m, nil
+}
+
+func (s *dbStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
+	m, err := s.GetCustomModel(modelID, ownerID)
+	if err != nil {
+		return err
+	}
+	if m.URL == modelURL {
+		return nil
+	}
+	_, err = s.db.Exec(`UPDATE custom_models SET url=?, position=0, chapter_id='', chapter_offset=0
+		WHERE id=? AND owner_id=?`, modelURL, modelID, ownerID)
+	return err
 }
 
 // SaveCustomModelText stores a fresh TXT body and rewinds the position.

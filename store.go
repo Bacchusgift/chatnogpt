@@ -153,6 +153,7 @@ type Store interface {
 	CreateCustomModel(ownerID, name, url string) (CustomModel, error)
 	ListCustomModels(ownerID string) ([]CustomModel, error)
 	GetCustomModel(modelID, ownerID string) (*CustomModel, error)
+	SaveCustomModelURL(modelID, ownerID, modelURL string) error
 	SaveCustomModelText(modelID, ownerID, text string) error
 	SaveCustomModelPosition(modelID, ownerID string, position int64) error
 	SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error

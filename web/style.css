@@ -396,6 +396,10 @@ body.cover-on .msg-real.covered.flash::after {
 #modelMenu { left: auto; right: 16px; }
 .model-item { display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 10px; }
 .model-item:hover { background: rgba(255,255,255,.06); }
+.model-entry { display: flex; align-items: center; gap: 2px; }
+.model-entry .model-item { min-width: 0; flex: 1; }
+.model-edit { flex: none; padding: 7px 8px; border-radius: 8px; color: #aaa; font-size: 12px; }
+.model-edit:hover { background: rgba(255,255,255,.08); color: #fff; }
 .model-item .m-name { font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; color: #ececec; }
 .model-item .m-desc { font-size: 12px; color: #8e8e8e; margin-top: 2px; }
 .model-item .m-check { color: #ececec; font-weight: 700; }
