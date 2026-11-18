@@ -343,7 +343,6 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "has_more": beforeTS > 0 && len(msgs) == limit})
-		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
 	case len(parts) == 2 && parts[1] == "read" && r.Method == http.MethodPost:
 		if err := s.store.MarkConvRead(convID, u.ID); err != nil {
 			writeErr(w, statusOf(err), err)
