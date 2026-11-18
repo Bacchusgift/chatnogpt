@@ -323,9 +323,12 @@ function setEffort(k) {
   localStorage.setItem('cngp_effort', max ? 'max' : 'off');
   $('#effortModeLabel').textContent = max ? '思考强度：最高' : '思考强度：关闭';
   document.body.classList.toggle('cover-on', max);
+  if (typeof novelCoverMode === 'function') novelCoverMode(max);
   if (max) {
     coverAllVisible();
-    toast('思考伪装已开启：悬停消息可查看原文');
+    toast(state.cur?.startsWith('novel:')
+      ? '思考伪装已开启：先在章节上框选透视范围并确认'
+      : '思考伪装已开启：悬停消息可查看原文');
   } else {
     uncoverAll();
     toast('已显示真实对话');
@@ -374,6 +377,7 @@ function showApp() {
   }
   if (state.coverMode) ensureCoverPool();
   loadConvs();
+  novelLoad();
 }
 
 function doLogoutLocal() {
@@ -430,7 +434,7 @@ async function loadConvs(silent = false) {
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
-  if (!state.convs.length) {
+  if (!state.convs.length && !novelModels.length) {
     const p = document.createElement('div');
     p.className = 'conv-empty';
     p.textContent = '还没有聊天';
@@ -449,6 +453,7 @@ function renderConvList() {
     b.ondblclick = () => renameConv(c.id, c.title);
     list.appendChild(b);
   }
+  novelRenderList(list);
 }
 
 function openPicker(title) {
@@ -1017,12 +1022,11 @@ async function openModelMenu() {
     const d = await api('/api/models');
     const models = d.models || [];
     modelMenu.innerHTML = '';
-    if (!models.length) {
+    if (!models.length && !novelModels.length) {
       const p = document.createElement('div');
       p.className = 'conv-empty';
       p.textContent = '暂时没有其他模型';
       modelMenu.appendChild(p);
-      return;
     }
     const descs = ['适合日常问答与闲聊', '擅长推理与长文本', '创意写作与头脑风暴', '代码与技术问题', '轻量高效，响应最快'];
     models.forEach((mo, i) => {
@@ -1044,6 +1048,7 @@ async function openModelMenu() {
       b.onclick = () => { setTarget(mo); closeModelMenu(); };
       modelMenu.appendChild(b);
     });
+    novelAddToMenu(modelMenu);
   } catch (e) {
     modelMenu.classList.add('hidden');
     toast(e.message);
@@ -1093,6 +1098,12 @@ function renderEffortMenu() {
     b.onclick = () => { setEffort(opt.k); effortMenu.classList.add('hidden'); };
     effortMenu.appendChild(b);
   }
+  if (state.coverMode && typeof novelResetRevealSelection === 'function') {
+    const reset = document.createElement('button'); reset.type = 'button';
+    reset.className = 'model-item'; reset.textContent = '重置大小';
+    reset.onclick = () => { novelResetRevealSelection(); effortMenu.classList.add('hidden'); };
+    effortMenu.appendChild(reset);
+  }
 }
 
 function renderAccessMenu() {
@@ -1123,18 +1134,46 @@ function renderAccessMenu() {
 
 const input = $('#input');
 const btnSend = $('#btnSend');
+let attachmentRequest = 0;
 
 function updateSendButton() {
   btnSend.disabled = !input.value.trim() && !state.attachment;
 }
 
 function removeAttachment() {
+  attachmentRequest++;
   if (state.attachment) URL.revokeObjectURL(state.attachment.preview);
   state.attachment = null;
   $('#imagePreview').replaceChildren();
   $('#imagePreview').classList.add('hidden');
   $('#imageInput').value = '';
   updateSendButton();
+}
+
+async function attachImage(file) {
+  const request = ++attachmentRequest;
+  try {
+    const blob = await compressWebP(file);
+    if (request !== attachmentRequest) return;
+    removeAttachment();
+    const preview = URL.createObjectURL(blob);
+    state.attachment = { blob, preview };
+    const box = $('#imagePreview');
+    const img = document.createElement('img');
+    img.src = preview;
+    img.alt = '待发送图片';
+    const size = document.createElement('span');
+    size.textContent = Math.round(blob.size / 1024) + ' KB · WebP';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '移除图片';
+    remove.onclick = removeAttachment;
+    box.replaceChildren(img, size, remove);
+    box.classList.remove('hidden');
+    updateSendButton();
+  } catch (e) {
+    if (request === attachmentRequest) toast(e.message);
+  }
 }
 
 async function compressWebP(file) {
@@ -1192,6 +1231,11 @@ async function send() {
   const attachment = state.attachment;
   if (!text && !attachment) return;
   if (!state.target) { toast('请先在左下角选择一个模型'); return; }
+  if (state.target.custom) {
+    if (attachment) { toast('小说阅读会话暂不支持发送图片'); return; }
+    novelSend(text);
+    return;
+  }
   const targetID = state.target.id;
   const initialConv = state.cur;
   state.sending = true;
@@ -1317,26 +1361,8 @@ function bind() {
   $('#imageInput').onchange = async () => {
     const file = $('#imageInput').files[0];
     if (!file) return;
-    try {
-      const blob = await compressWebP(file);
-      if ($('#imageInput').files[0] !== file) return;
-      removeAttachment();
-      const preview = URL.createObjectURL(blob);
-      state.attachment = { blob, preview };
-      const box = $('#imagePreview');
-      const img = document.createElement('img');
-      img.src = preview;
-      img.alt = '待发送图片';
-      const size = document.createElement('span');
-      size.textContent = Math.round(blob.size / 1024) + ' KB · WebP';
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.textContent = '移除图片';
-      remove.onclick = removeAttachment;
-      box.replaceChildren(img, size, remove);
-      box.classList.remove('hidden');
-      updateSendButton();
-    } catch (e) { $('#imageInput').value = ''; toast(e.message); }
+    await attachImage(file);
+    $('#imageInput').value = '';
   };
 
   modelBtn.addEventListener('click', e => {
@@ -1366,6 +1392,14 @@ function bind() {
   });
 
   btnSend.onclick = send;
+  input.addEventListener('paste', e => {
+    const data = e.clipboardData;
+    const item = Array.from(data?.items || []).find(entry => entry.type.startsWith('image/'));
+    const file = item?.getAsFile() || Array.from(data?.files || []).find(entry => entry.type.startsWith('image/'));
+    if (!file) return;
+    e.preventDefault();
+    attachImage(file);
+  });
   input.addEventListener('input', () => {
     autoGrow();
     updateSendButton();

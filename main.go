@@ -173,6 +173,8 @@ func buildMux(s *server) http.Handler {
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/models", s.handleModels)
+	mux.HandleFunc("/api/custom-models", s.handleCustomModels)
+	mux.HandleFunc("/api/custom-models/", s.handleCustomModelSub)
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
 	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
 	mux.HandleFunc("/api/conversations/join", s.handleJoinConv)

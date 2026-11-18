@@ -100,13 +100,26 @@ type imageRecord struct {
 }
 
 type persistData struct {
-	Images     map[string]imageRecord `json:"images"`
-	Users      map[string]*User       `json:"users"`
-	ByName     map[string]string      `json:"users_by_name"` // username(小写) -> user id
-	ByNick     map[string]string      `json:"users_by_nick"` // 模型名称(小写) -> user id
-	Tokens     map[string]string      `json:"tokens"`
-	ConvByCode map[string]string      `json:"conv_by_code"`
-	Convs      map[string]*Conv       `json:"convs"`
+	CustomModels map[string]*CustomModel `json:"custom_models,omitempty"`
+	Images       map[string]imageRecord  `json:"images"`
+	Users        map[string]*User        `json:"users"`
+	ByName       map[string]string       `json:"users_by_name"` // username(小写) -> user id
+	ByNick       map[string]string       `json:"users_by_nick"` // 模型名称(小写) -> user id
+	Tokens       map[string]string       `json:"tokens"`
+	ConvByCode   map[string]string       `json:"conv_by_code"`
+	Convs        map[string]*Conv        `json:"convs"`
+}
+
+type CustomModel struct {
+	ID            string `json:"id"`
+	OwnerID       string `json:"owner_id"`
+	Name          string `json:"name"`
+	URL           string `json:"url,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Position      int    `json:"position"`
+	ChapterID     string `json:"chapter_id,omitempty"`
+	ChapterOffset int    `json:"chapter_offset,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
 }
 
 // Store is a tiny JSON-file backed store, fine for a friends-sized
@@ -159,6 +172,9 @@ func LoadStore(dir string) (*Store, error) {
 	if d.Convs == nil {
 		d.Convs = map[string]*Conv{}
 	}
+	if d.CustomModels == nil {
+		d.CustomModels = map[string]*CustomModel{}
+	}
 	if d.Images == nil {
 		d.Images = map[string]imageRecord{}
 	}
@@ -168,13 +184,14 @@ func LoadStore(dir string) (*Store, error) {
 
 func freshData() *persistData {
 	return &persistData{
-		Images:     map[string]imageRecord{},
-		Users:      map[string]*User{},
-		ByName:     map[string]string{},
-		ByNick:     map[string]string{},
-		Tokens:     map[string]string{},
-		ConvByCode: map[string]string{},
-		Convs:      map[string]*Conv{},
+		Images:       map[string]imageRecord{},
+		Users:        map[string]*User{},
+		ByName:       map[string]string{},
+		ByNick:       map[string]string{},
+		Tokens:       map[string]string{},
+		ConvByCode:   map[string]string{},
+		Convs:        map[string]*Conv{},
+		CustomModels: map[string]*CustomModel{},
 	}
 }
 

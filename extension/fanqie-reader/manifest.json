@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ChatNoGPT 番茄阅读桥接",
+  "version": "0.1.0",
+  "description": "把已登录的番茄章节显示在本机 ChatNoGPT 阅读面板中。",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "https://fanqienovel.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://fanqienovel.com/*"],
+      "js": ["fanqie.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["chat.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
