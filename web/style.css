@@ -378,7 +378,7 @@ body.cover-on .msg-real.covered.flash::after {
   border: 1px solid #3f5c47; border-radius: 12px; font-size: 13px;
 }
 #notifBanner button {
-  padding: 5px 10px; border-radius: 8px; border: 1px solid #56816a;
+  white-space: nowrap; padding: 5px 10px; border-radius: 8px; border: 1px solid #56816a;
   background: #35503f; color: #e6f4ea; font-size: 12px;
 }
 #notifBanner button:last-child { margin-left: auto; background: transparent; border-color: transparent; color: #9fb8a8; }
@@ -465,4 +465,18 @@ body.cover-on .msg-real.covered.flash::after {
   #sidebar.open { transform: translateX(0); }
   .side-mask.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 39; }
   .msg-col { padding: 20px 14px 10px; }
+
+  /* 移动端输入条紧凑排版：隐藏装饰与冗余文案，按钮只缩不换行 */
+  .composer { padding: 10px 10px 8px 12px; border-radius: 20px; }
+  .composer-bar { gap: 4px; }
+  .bar-left, .bar-right { gap: 2px; min-width: 0; }
+  .ghost-btn { width: 30px; height: 30px; }
+  .access-btn { font-size: 12px; padding: 5px 5px; gap: 3px; min-width: 0; }
+  .access-btn .chev, .model-btn .chev { display: none; }
+  .access-btn svg { flex: none; }
+  .effort-label { display: none; }        /* “思考强度：”长标签在手机上隐藏，只留状态 */
+  .ring-btn { display: none; }            /* 装饰环占位无功能，手机端隐藏 */
+  .model-btn { max-width: 120px; padding: 5px 6px; gap: 4px; }
+  .model-btn .m-effort { display: none !important; } /* 与左侧思考强度重复；内联 style 需 !important 压制 */
+  #btnSend { width: 32px; height: 32px; }
 }

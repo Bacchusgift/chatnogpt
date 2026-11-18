@@ -330,7 +330,7 @@ function setEffort(k) {
   const max = k === 'max';
   state.coverMode = max;
   localStorage.setItem('cngp_effort', max ? 'max' : 'off');
-  $('#effortModeLabel').textContent = max ? '思考强度：最高' : '思考强度：关闭';
+  $('#effortModeLabel').textContent = max ? '最高' : '关闭';
   document.body.classList.toggle('cover-on', max);
   if (typeof novelCoverMode === 'function') novelCoverMode(max);
   if (max) {
@@ -377,7 +377,7 @@ function showApp() {
   $('#meName').textContent = state.me.nickname;
   $('#meAvatar').textContent = (Array.from(state.me.nickname.trim())[0] || '?').toUpperCase();
   // 恢复上次选择的思考强度
-  $('#effortModeLabel').textContent = state.coverMode ? '思考强度：最高' : '思考强度：关闭';
+  $('#effortModeLabel').textContent = state.coverMode ? '最高' : '关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
   if (!state.cur) {
     $('#messages').replaceChildren();
