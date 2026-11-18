@@ -1,0 +1,365 @@
+Index: web/app.js
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>'use strict';\n\n/* ChatNoGPT 前端\n * 对外呈现为一个普通的 AI 聊天网站（形似 ChatGPT）：\n *  - 输入框左下角是“模型选择器”，实际是在选择与自己对话的另一个用户；\n *    选中谁，消息就发给谁，对方那边的列表会自动出现这条聊天\n *  - 自己发的消息 → 右侧气泡；别人发的消息 → 左侧平铺 + 模型名标签\n *  - 对方打字时显示“思考中 · Ns”，消息到达后无缝变为“已思考 N 秒”+ 打字机\n *  - 会话不手动创建：第一条消息即创建；侧栏通过轮询自动出现新聊天\n */\n\nconst $ = (s, el = document) => el.querySelector(s);\n\nconst state = {\n  token: localStorage.getItem('cngp_token') || '',\n  me: null,\n  convs: [],\n  cur: null,          // 当前聊天 id\n  curInfo: null,      // 当前聊天详情（含 peer 信息）\n  target: null,       // 模型选择器当前选中 {id, name}\n  ws: null,\n  pending: new Set(), // 已发出、等待服务器回显的 client_msg_id\n  seenMsg: new Set(), // 当前聊天已渲染过的消息 id（去重/断线补拉）\n  lastTS: 0,          // 当前聊天已收到的最大时间戳（断线补拉用）\n  lastRenderTS: 0,    // 当前聊天已渲染的最大时间戳（时间分割线用）\n  unread: 0,          // 页签隐藏期间累计的新消息数（标题计数）\n  baseTitle: '',      // 页面原始标题\n  queue: [],          // 等待播放的消息\n  animating: false,\n  gen: 0,             // 切换聊天时 +1，让旧的动画自行作废\n  lastTypingSent: 0,\n  thinkingHideTimer: 0,\n  thinkingTimer: 0,\n  thinkingStart: 0,\n  thinkingRow: null,\n  thinkingSecEl: null,\n  pendingSend: null,  // 会话尚未连上 WS 时暂存待发消息\n  access: '完全访问', // 装饰性“权限档位”\n};\n\n/* ---------- 时间显示与消息通知 ---------- */\n\nconst DIVIDER_GAP_SEC = 5 * 60; // 消息间隔超过 5 分钟插入时间分割线\nconst pad2 = n => String(n).padStart(2, '0');\n\nfunction fmtClock(ts) {\n  const d = new Date(ts * 1000);\n  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());\n}\n\nfunction fmtDividerLabel(ts) {\n  const d = new Date(ts * 1000), now = new Date();\n  const yest = new Date(now);\n  yest.setDate(now.getDate() - 1);\n  const hm = fmtClock(ts);\n  if (d.toDateString() === now.toDateString()) return hm;\n  if (d.toDateString() === yest.toDateString()) return '昨天 ' + hm;\n  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ` + hm;\n  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ` + hm;\n}\n\nfunction fullStamp(ts) {\n  const d = new Date(ts * 1000);\n  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +\n    `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;\n}\n\n// 与上一条消息间隔超阈值（或为首条）时插入居中时间分割线；\n// 只有真正插入分割线时才推进 anchor，避免连续短间隔消息被提前“顶掉”\nfunction ensureDivider(ts) {\n  if (!ts) return;\n  if (state.lastRenderTS && ts - state.lastRenderTS < DIVIDER_GAP_SEC) return;\n  const div = document.createElement('div');\n  div.className = 'time-divider';\n  div.textContent = fmtDividerLabel(ts);\n  $('#messages').appendChild(div);\n  state.lastRenderTS = ts;\n}\n\nfunction bumpUnread() {\n  if (!document.hidden) return;\n  state.unread++;\n  document.title = `(${state.unread}) ${state.baseTitle}`;\n}\n\nfunction resetUnread() {\n  if (state.unread) {\n    state.unread = 0;\n    document.title = state.baseTitle;\n  }\n}\n\n// 页签隐藏时：系统通知 + 标题计数；页签可见时什么都不做（消息本来就在眼前）\nfunction notifyMessage(convID, title, body) {\n  bumpUnread();\n  try {\n    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {\n      const n = new Notification(title, { body: body.slice(0, 120), tag: 'cngp-' + convID });\n      n.onclick = () => {\n        window.focus();\n        resetUnread();\n        if (convID !== state.cur) selectConv(convID);\n        n.close();\n      };\n    }\n  } catch {}\n}\n\n// 登录/注册成功时（用户手势内）请求通知授权；拒绝或 iOS 浏览器则静默降级为标题计数\nfunction askNotifyPermission() {\n  try {\n    if ('Notification' in window && Notification.permission === 'default') {\n      Notification.requestPermission().catch(() => {});\n    }\n  } catch {}\n}\n\n/* ---------- api ---------- */\n\nasync function api(path, opts = {}) {\n  const res = await fetch(path, {\n    method: opts.method || (opts.body ? 'POST' : 'GET'),\n    headers: {\n      'Content-Type': 'application/json',\n      ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),\n    },\n    body: opts.body ? JSON.stringify(opts.body) : undefined,\n  });\n  if (res.status === 401) {\n    doLogoutLocal();\n    throw new Error('登录状态已失效，请重新登录');\n  }\n  const data = await res.json().catch(() => ({}));\n  if (!res.ok) throw new Error(data.error || ('请求失败（' + res.status + '）'));\n  return data;\n}\n\n/* ---------- 视图切换 ---------- */\n\nfunction showAuth() {\n  $('#authView').classList.remove('hidden');\n  $('#appView').classList.add('hidden');\n}\n\nfunction showApp() {\n  $('#authView').classList.add('hidden');\n  $('#appView').classList.remove('hidden');\n  $('#meName').textContent = state.me.nickname;\n  $('#meAvatar').textContent = (Array.from(state.me.nickname.trim())[0] || '?').toUpperCase();\n  loadConvs();\n}\n\nfunction doLogoutLocal() {\n  localStorage.removeItem('cngp_token');\n  state.token = '';\n  state.cur = null;\n  state.target = null;\n  if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }\n  showAuth();\n}\n\n/* ---------- 聊天列表（轮询自动发现新聊天） ---------- */\n\nasync function loadConvs(silent = false) {\n  try {\n    const d = await api('/api/conversations');\n    const prevTS = new Map(state.convs.map(c => [c.id, c.last_ts || 0]));\n    state.convs = d.conversations || [];\n    // WS 只订阅当前聊天；侧栏轮询顺带探测其他聊天的新消息（含别人新发起的聊天）\n    if (prevTS.size) {\n      for (const c of state.convs) {\n        if (c.id !== state.cur && (c.last_ts || 0) > (prevTS.get(c.id) || 0)) {\n          notifyMessage(c.id, c.title, '收到新消息');\n        }\n      }\n    }\n    renderConvList();\n    if (!state.cur && state.convs.length) selectConv(state.convs[0].id);\n  } catch (e) { if (!silent) toast(e.message); }\n}\n\nfunction renderConvList() {\n  const list = $('#convList');\n  list.innerHTML = '';\n  if (!state.convs.length) {\n    const p = document.createElement('div');\n    p.className = 'conv-empty';\n    p.textContent = '还没有聊天';\n    list.appendChild(p);\n    return;\n  }\n  for (const c of state.convs) {\n    const b = document.createElement('button');\n    b.type = 'button';\n    b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');\n    b.textContent = c.title;\n    b.title = c.title;\n    b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };\n    list.appendChild(b);\n  }\n}\n\n/* ---------- 聊天切换与消息渲染 ---------- */\n\nasync function selectConv(id) {\n  state.cur = id;\n  state.gen++;\n  state.queue = [];\n  state.animating = false;\n  state.pending.clear();\n  state.seenMsg = new Set();\n  state.lastTS = 0;\n  state.lastRenderTS = 0;\n  state.thinkingRow = null;\n  hideTyping();\n  renderConvList();\n  try {\n    const d = await api('/api/conversations/' + id);\n    state.curInfo = d.conversation;\n    $('#convTitle').textContent = d.conversation.title;\n    // 打开某个聊天 = 选中了对方那个“模型”\n    if (d.conversation.peer_id) {\n      setTarget({ id: d.conversation.peer_id, name: d.conversation.peer_nickname });\n    } else {\n      // 兼容旧的多人聊天：隐藏选择器\n      state.target = null;\n      $('#modelBtn').style.display = 'none';\n    }\n    const md = await api(`/api/conversations/${id}/messages`);\n    const box = $('#messages');\n    box.innerHTML = '';\n    const msgs = md.messages || [];\n    if (!msgs.length) appendWelcome(d.conversation.title);\n    for (const m of msgs) {\n      state.seenMsg.add(m.id);\n      if (m.ts > state.lastTS) state.lastTS = m.ts;\n      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);\n      else appendAIStatic(m.nickname, m.content, m.ts);\n    }\n    scrollBottom(true);\n    connectWS(id);\n    $('#input').focus();\n  } catch (e) { toast(e.message); }\n}\n\nfunction appendWelcome(title) {\n  const w = document.createElement('div');\n  w.id = 'welcome';\n  w.className = 'welcome';\n  const h = document.createElement('h1');\n  h.textContent = title;\n  const p = document.createElement('p');\n  p.textContent = '有什么可以帮忙的吗？';\n  w.append(h, p);\n  $('#messages').appendChild(w);\n}\n\nfunction removeWelcome() {\n  const w = $('#welcome');\n  if (w) w.remove();\n}\n\nfunction appendOwn(content, ts) {\n  removeWelcome();\n  const wrap = document.createElement('div');\n  wrap.className = 'msg-own';\n  const b = document.createElement('div');\n  b.className = 'bubble';\n  b.textContent = content;\n  if (ts) {\n    ensureDivider(ts);\n    b.title = fullStamp(ts);\n  }\n  wrap.appendChild(b);\n  $('#messages').appendChild(wrap);\n}\n\nfunction appendAIRow(nickname) {\n  removeWelcome();\n  const row = document.createElement('div');\n  row.className = 'msg-ai';\n  const label = document.createElement('div');\n  label.className = 'ai-label';\n  label.textContent = nickname;\n  row.appendChild(label);\n  $('#messages').appendChild(row);\n  return { row, label };\n}\n\nfunction appendAIStatic(nickname, content, ts) {\n  if (ts) ensureDivider(ts);\n  const r = appendAIRow(nickname);\n  const body = document.createElement('div');\n  body.className = 'ai-body';\n  body.textContent = content;\n  if (ts) body.title = fullStamp(ts);\n  r.row.appendChild(body);\n}\n\nfunction scrollBottom(force) {\n  const sc = $('#msgScroll');\n  if (force || sc.scrollHeight - sc.scrollTop - sc.clientHeight < 140) {\n    sc.scrollTop = sc.scrollHeight;\n  }\n}\nconst scrollFollow = () => scrollBottom(false);\n\n/* ---------- WebSocket ---------- */\n\nfunction connectWS(id) {\n  if (state.ws) {\n    const old = state.ws;\n    old.onclose = null;\n    try { old.close(); } catch {}\n  }\n  const proto = location.protocol === 'https:' ? 'wss' : 'ws';\n  const ws = new WebSocket(\n    `${proto}://${location.host}/ws?conv=${encodeURIComponent(id)}&token=${encodeURIComponent(state.token)}`\n  );\n  state.ws = ws;\n  ws.onopen = () => { syncMissed(id); flushPending(); };\n  ws.onmessage = e => { try { handleEvent(JSON.parse(e.data)); } catch {} };\n  ws.onclose = () => {\n    if (state.cur === id && state.ws === ws) {\n      setTimeout(async () => {\n        if (state.cur !== id || !state.token) return;\n        try {\n          // 先验证登录态：token 已失效时 api() 会本地登出，避免用死 token 无限重连\n          await api('/api/me');\n        } catch (e) {\n          if (!state.token) return;\n        }\n        connectWS(id);\n      }, 2500);\n    }\n  };\n}\n\n// 断线重连后，把断开期间错过的消息补拉回来\nasync function syncMissed(id) {\n  try {\n    const d = await api(`/api/conversations/${id}/messages?after_ts=${state.lastTS}`);\n    for (const m of d.messages || []) {\n      if (state.seenMsg.has(m.id)) continue;\n      if (m.client_msg_id && state.pending.has(m.client_msg_id)) {\n        state.pending.delete(m.client_msg_id);\n        state.seenMsg.add(m.id);\n        if (m.ts > state.lastTS) state.lastTS = m.ts;\n        continue;\n      }\n      state.seenMsg.add(m.id);\n      if (m.ts > state.lastTS) state.lastTS = m.ts;\n      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts);\n      else enqueueAI(m.nickname, m.content, null, m.ts);\n      scrollFollow();\n    }\n  } catch {}\n}\n\nfunction flushPending() {\n  if (state.pendingSend && state.ws && state.ws.readyState === 1) {\n    const t = state.pendingSend;\n    state.pendingSend = null;\n    doSend(t);\n  }\n}\n\nfunction handleEvent(ev) {\n  if (ev.conv_id && ev.conv_id !== state.cur) return;\n  if (ev.type === 'msg') {\n    if (state.seenMsg.has(ev.id)) return;\n    state.seenMsg.add(ev.id);\n    if (ev.ts > state.lastTS) state.lastTS = ev.ts;\n    if (ev.sender_id === state.me.id) {\n      // 自己发的：同标签页靠乐观渲染，这里只处理回显确认和其他标签页\n      if (ev.client_msg_id && state.pending.has(ev.client_msg_id)) {\n        state.pending.delete(ev.client_msg_id);\n        return;\n      }\n      appendOwn(ev.content, ev.ts);\n      scrollFollow();\n    } else {\n      // 记录“思考时长”：从看到对方开始打字（或本条开始渲染思考）到现在\n      let thinkSec = null;\n      if (state.thinkingRow && state.thinkingRow.row.isConnected) {\n        thinkSec = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));\n      }\n      hideTyping();\n      enqueueAI(ev.nickname, ev.content, thinkSec, ev.ts);\n      // 页签在后台时提醒：系统通知 + 标题计数（可见时不打扰）\n      notifyMessage(state.cur, ev.nickname, ev.content);\n    }\n  } else if (ev.type === 'typing') {\n    if (ev.sender_id !== state.me.id) showTyping(ev.nickname);\n  }\n}\n\n/* ---------- “思考中 · Ns” → “已思考 N 秒” + 打字机 ---------- */\n\nfunction showTyping(nickname) {\n  removeWelcome();\n  if (!state.thinkingRow || !state.thinkingRow.row.isConnected) {\n    const row = document.createElement('div');\n    row.className = 'msg-ai';\n    const label = document.createElement('div');\n    label.className = 'ai-label';\n    const body = document.createElement('div');\n    body.className = 'thinking-body';\n    const text = document.createElement('span');\n    text.className = 'thinking-text';\n    text.textContent = '思考中';\n    const dots = document.createElement('span');\n    dots.className = 'typing-dots';\n    dots.innerHTML = '<i></i><i></i><i></i>';\n    const sec = document.createElement('span');\n    sec.className = 'thinking-sec';\n    sec.textContent = '';\n    body.append(text, dots, sec);\n    row.append(label, body);\n    $('#messages').appendChild(row);\n    state.thinkingRow = { row, label };\n    state.thinkingSecEl = sec;\n    state.thinkingStart = Date.now();\n    clearInterval(state.thinkingTimer);\n    state.thinkingTimer = setInterval(() => {\n      if (state.thinkingSecEl && state.thinkingSecEl.isConnected) {\n        const s = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));\n        state.thinkingSecEl.textContent = s + 's';\n      }\n    }, 400);\n    scrollFollow();\n  }\n  state.thinkingRow.label.textContent = nickname;\n  clearTimeout(state.thinkingHideTimer);\n  state.thinkingHideTimer = setTimeout(hideTyping, 30000);\n}\n\nfunction hideTyping() {\n  clearTimeout(state.thinkingHideTimer);\n  clearInterval(state.thinkingTimer);\n  if (state.thinkingRow) {\n    state.thinkingRow.row.remove();\n    state.thinkingRow = null;\n    state.thinkingSecEl = null;\n  }\n}\n\n/* ---------- 播放队列：思考 → 已思考 N 秒 → 打字机 ---------- */\n\nfunction enqueueAI(nickname, content, thinkSec, ts) {\n  state.queue.push({ nickname, content, thinkSec, ts, gen: state.gen });\n  pumpQueue();\n}\n\nfunction pumpQueue() {\n  if (state.animating) return;\n  const item = state.queue.shift();\n  if (!item) return;\n  if (item.gen !== state.gen) { pumpQueue(); return; }\n  state.animating = true;\n\n  if (item.thinkSec == null) {\n    // 没观察到对方打字（比如刚切进聊天）：也先渲染一小段“思考中”，更像 AI\n    showTyping(item.nickname);\n    const fakeMs = 800 + Math.floor(Math.random() * 1200);\n    setTimeout(() => {\n      if (item.gen !== state.gen) { state.animating = false; pumpQueue(); return; }\n      item.thinkSec = Math.max(1, Math.round((Date.now() - state.thinkingStart) / 1000));\n      hideTyping();\n      setTimeout(() => animateAI(item), 120);\n    }, fakeMs);\n    return;\n  }\n  setTimeout(() => animateAI(item), 150 + Math.random() * 250);\n}\n\nfunction animateAI(item) {\n  if (item.gen !== state.gen) { state.animating = false; pumpQueue(); return; }\n  if (item.ts) ensureDivider(item.ts);\n  const r = appendAIRow(item.nickname);\n  let body;\n  if (item.thinkSec >= 1) {\n    const th = document.createElement('div');\n    th.className = 'thought-line';\n    th.textContent = `已思考 ${item.thinkSec} 秒`;\n    body = document.createElement('div');\n    body.className = 'ai-body';\n    r.row.append(th, body);\n  } else {\n    body = document.createElement('div');\n    body.className = 'ai-body';\n    r.row.appendChild(body);\n  }\n  if (item.ts) body.title = fullStamp(item.ts);\n  const cursor = document.createElement('span');\n  cursor.className = 'cursor';\n  const textNode = document.createTextNode('');\n  body.append(textNode, cursor);\n  scrollFollow();\n\n  const text = item.content;\n  const total = text.length;\n  let i = 0;\n  const chunk = Math.max(1, Math.round(total / 300)); // 长消息加速，整体不超过约 3.5 秒\n  const step = () => {\n    if (item.gen !== state.gen) return; // 聊天已切换，动画作废\n    i = Math.min(total, i + chunk);\n    textNode.data = text.slice(0, i);\n    scrollFollow();\n    if (i < total) setTimeout(step, 12);\n    else {\n      cursor.remove();\n      state.animating = false;\n      pumpQueue();\n    }\n  };\n  setTimeout(step, 12);\n}\n\n/* ---------- 模型选择器 ---------- */\n\nconst modelBtn = $('#modelBtn');\nconst modelLabel = $('#modelLabel');\nconst modelMenu = $('#modelMenu');\n\nfunction setTarget(m) {\n  state.target = { id: m.id, name: m.name };\n  modelLabel.textContent = m.name;\n  $('#effortLabel').style.display = 'inline';\n  modelBtn.style.display = 'flex';\n}\n\nasync function openModelMenu() {\n  modelMenu.innerHTML = '<div class=\"conv-empty\">加载中…</div>';\n  modelMenu.classList.remove('hidden');\n  try {\n    const d = await api('/api/models');\n    const models = d.models || [];\n    modelMenu.innerHTML = '';\n    if (!models.length) {\n      const p = document.createElement('div');\n      p.className = 'conv-empty';\n      p.textContent = '暂时没有其他模型';\n      modelMenu.appendChild(p);\n      return;\n    }\n    const descs = ['适合日常问答与闲聊', '擅长推理与长文本', '创意写作与头脑风暴', '代码与技术问题', '轻量高效，响应最快'];\n    models.forEach((mo, i) => {\n      const b = document.createElement('button');\n      b.type = 'button';\n      b.className = 'model-item';\n      const name = document.createElement('div');\n      name.className = 'm-name';\n      const nm = document.createElement('span');\n      nm.textContent = mo.name;\n      const check = document.createElement('span');\n      check.className = 'm-check';\n      check.textContent = (state.target && state.target.id === mo.id) ? '✓' : '';\n      name.append(nm, check);\n      const desc = document.createElement('div');\n      desc.className = 'm-desc';\n      desc.textContent = descs[i % descs.length];\n      b.append(name, desc);\n      b.onclick = () => { setTarget(mo); closeModelMenu(); };\n      modelMenu.appendChild(b);\n    });\n  } catch (e) {\n    modelMenu.classList.add('hidden');\n    toast(e.message);\n  }\n}\n\nfunction closeModelMenu() { modelMenu.classList.add('hidden'); }\n\n/* ---------- “完全访问”选择（纯装饰，维持 AI 网站观感） ---------- */\n\nconst accessBtn = $('#btnAccess');\nconst accessMenu = $('#accessMenu');\nconst accessOpts = ['完全访问', '需要时联网', '仅对话'];\n\nfunction renderAccessMenu() {\n  accessMenu.innerHTML = '';\n  for (const opt of accessOpts) {\n    const b = document.createElement('button');\n    b.type = 'button';\n    b.className = 'model-item';\n    const name = document.createElement('div');\n    name.className = 'm-name';\n    const nm = document.createElement('span');\n    nm.textContent = opt;\n    const check = document.createElement('span');\n    check.className = 'm-check';\n    check.textContent = (state.access === opt) ? '✓' : '';\n    name.append(nm, check);\n    b.appendChild(name);\n    b.onclick = () => {\n      state.access = opt;\n      $('#accessLabel').textContent = opt;\n      accessMenu.classList.add('hidden');\n    };\n    accessMenu.appendChild(b);\n  }\n}\n\n/* ---------- 发送 ---------- */\n\nconst input = $('#input');\nconst btnSend = $('#btnSend');\n\nfunction doSend(text) {\n  const cmid = (crypto.randomUUID\n    ? crypto.randomUUID()\n    : Date.now() + '-' + Math.random().toString(36).slice(2));\n  state.pending.add(cmid);\n  appendOwn(text, Math.floor(Date.now() / 1000));\n  scrollFollow();\n  btnSend.disabled = true;\n  state.ws.send(JSON.stringify({ type: 'msg', content: text, client_msg_id: cmid }));\n}\n\nasync function send() {\n  const text = input.value.trim();\n  if (!text) return;\n  if (!state.target) { toast('请先在左下角选择一个模型'); return; }\n  input.value = '';\n  autoGrow();\n  btnSend.disabled = true;\n\n  // 当前打开的聊天正是与该模型的会话 → 直接发\n  if (state.cur && state.curInfo && state.curInfo.peer_id === state.target.id) {\n    if (state.ws && state.ws.readyState === 1) doSend(text);\n    else state.pendingSend = text; // 重连后自动发出\n    return;\n  }\n  // 否则定位（或自动创建）与该模型的会话，连上后自动发出\n  try {\n    const d = await api('/api/conversations/with', { body: { peer_id: state.target.id } });\n    state.pendingSend = text;\n    if (d.conversation.id === state.cur) {\n      flushPending();\n    } else {\n      await loadConvs(true);\n      await selectConv(d.conversation.id);\n    }\n  } catch (e) {\n    toast(e.message);\n    input.value = text;\n    autoGrow();\n    btnSend.disabled = false;\n  }\n}\n\nfunction autoGrow() {\n  input.style.height = 'auto';\n  input.style.height = Math.min(input.scrollHeight, 180) + 'px';\n}\n\n/* ---------- 其他 ---------- */\n\nfunction toast(msg) {\n  const t = $('#toast');\n  t.textContent = msg;\n  t.classList.add('show');\n  setTimeout(() => t.classList.remove('show'), 2500);\n}\n\nfunction closeSidebarMobile() {\n  $('#sidebar').classList.remove('open');\n  $('#sideMask').classList.remove('show');\n}\n\nfunction switchTab(login) {\n  $('#tabLogin').classList.toggle('active', login);\n  $('#tabRegister').classList.toggle('active', !login);\n  $('#loginForm').classList.toggle('hidden', !login);\n  $('#registerForm').classList.toggle('hidden', login);\n}\n\nasync function suggestName() {\n  try {\n    const d = await api('/api/model-suggest');\n    $('#regName').value = d.name || '';\n  } catch {}\n}\n\nfunction bind() {\n  $('#tabLogin').onclick = () => switchTab(true);\n  $('#tabRegister').onclick = () => { switchTab(false); if (!$('#regName').value) suggestName(); };\n  $('#btnRerollName').onclick = suggestName;\n\n  $('#loginForm').onsubmit = async e => {\n    e.preventDefault();\n    $('#loginError').textContent = '';\n    try {\n      const d = await api('/api/login', {\n        body: { name: $('#loginName').value.trim(), password: $('#loginPassword').value },\n      });\n      state.token = d.token;\n      localStorage.setItem('cngp_token', d.token);\n      state.me = d.user;\n      askNotifyPermission();\n      showApp();\n    } catch (err) { $('#loginError').textContent = err.message; }\n  };\n\n  $('#registerForm').onsubmit = async e => {\n    e.preventDefault();\n    $('#regError').textContent = '';\n    try {\n      const d = await api('/api/register', {\n        body: { name: $('#regName').value.trim(), password: $('#regPassword').value },\n      });\n      if (d.user.nickname !== $('#regName').value.trim()) {\n        toast(`该模型名称已被使用，已自动分配：${d.user.nickname}`);\n      }\n      state.token = d.token;\n      localStorage.setItem('cngp_token', d.token);\n      state.me = d.user;\n      askNotifyPermission();\n      showApp();\n    } catch (err) { $('#regError').textContent = err.message; }\n  };\n\n  $('#btnLogout').onclick = () => {\n    api('/api/logout', { method: 'POST', body: {} }).catch(() => {});\n    resetUnread();\n    doLogoutLocal();\n  };\n\n  $('#btnToggleSide').onclick = () => {\n    $('#sidebar').classList.add('open');\n    $('#sideMask').classList.add('show');\n  };\n  $('#sideMask').onclick = closeSidebarMobile;\n\n  modelBtn.addEventListener('click', e => {\n    e.stopPropagation();\n    accessMenu.classList.add('hidden');\n    if (modelMenu.classList.contains('hidden')) openModelMenu();\n    else closeModelMenu();\n  });\n  accessBtn.addEventListener('click', e => {\n    e.stopPropagation();\n    modelMenu.classList.add('hidden');\n    if (accessMenu.classList.contains('hidden')) { renderAccessMenu(); accessMenu.classList.remove('hidden'); }\n    else accessMenu.classList.add('hidden');\n  });\n  document.addEventListener('click', e => {\n    if (!modelMenu.contains(e.target) && !modelBtn.contains(e.target)) closeModelMenu();\n    if (!accessMenu.contains(e.target) && !accessBtn.contains(e.target)) accessMenu.classList.add('hidden');\n  });\n\n  btnSend.onclick = send;\n  input.addEventListener('input', () => {\n    autoGrow();\n    btnSend.disabled = input.value.trim() === '';\n    const nowT = Date.now();\n    if (state.ws && state.ws.readyState === 1 && input.value &&\n        nowT - state.lastTypingSent > 1800) {\n      state.lastTypingSent = nowT;\n      state.ws.send(JSON.stringify({ type: 'typing' }));\n    }\n  });\n  input.addEventListener('keydown', e => {\n    // 中文输入法组合期间不触发发送\n    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {\n      e.preventDefault();\n      send();\n    }\n  });\n}\n\nasync function init() {\n  bind();\n  state.baseTitle = document.title;\n  document.addEventListener('visibilitychange', () => { if (!document.hidden) resetUnread(); });\n  window.addEventListener('focus', resetUnread);\n  // 轮询聊天列表：别人发来的新聊天会自动出现在侧栏。\n  // 页签隐藏时降为每 15s 一次，保证后台仍能触发新消息通知\n  let pollTicks = 0;\n  setInterval(() => {\n    pollTicks++;\n    if (!state.token || !state.me) return;\n    if (document.hidden && pollTicks % 3 !== 0) return;\n    loadConvs(true);\n  }, 5000);\n  if (!state.token) { showAuth(); return; }\n  try {\n    const d = await api('/api/me');\n    state.me = d.user;\n    showApp();\n  } catch (e) { toast(e.message); }\n}\n\ndocument.addEventListener('DOMContentLoaded', init);\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/web/app.js b/web/app.js
+--- a/web/app.js	(revision 6b5abba1ec138663846f5b6ee60bb802fd157c30)
++++ b/web/app.js	(date 1794899561768)
+@@ -36,6 +36,11 @@
+   thinkingSecEl: null,
+   pendingSend: null,  // 会话尚未连上 WS 时暂存待发消息
+   access: '完全访问', // 装饰性“权限档位”
++  customModels: [],
++  customMessages: new Map(),
++  importedChapters: new Map(),
++  readerWindow: null,
++  readerModelID: null,
+ };
+ 
+ /* ---------- 时间显示与消息通知 ---------- */
+@@ -147,7 +152,21 @@
+   $('#appView').classList.remove('hidden');
+   $('#meName').textContent = state.me.nickname;
+   $('#meAvatar').textContent = (Array.from(state.me.nickname.trim())[0] || '?').toUpperCase();
++  try {
++    state.customMessages = new Map(Object.entries(JSON.parse(localStorage.getItem('cngp_custom_history_' + state.me.id) || '{}')));
++  } catch { state.customMessages = new Map(); }
++  try {
++    state.importedChapters = new Map(Object.entries(JSON.parse(localStorage.getItem('cngp_imported_chapters_' + state.me.id) || '{}')));
++  } catch { state.importedChapters = new Map(); }
+   loadConvs();
++  loadCustomModels();
++}
++
++async function loadCustomModels() {
++  try {
++    state.customModels = (await api('/api/custom-models')).models || [];
++    renderConvList();
++  } catch (e) { toast(e.message); }
+ }
+ 
+ function doLogoutLocal() {
+@@ -155,6 +174,11 @@
+   state.token = '';
+   state.cur = null;
+   state.target = null;
++  state.customModels = [];
++  state.customMessages = new Map();
++  state.importedChapters = new Map();
++  state.readerWindow = null;
++  state.readerModelID = null;
+   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
+   showAuth();
+ }
+@@ -182,7 +206,7 @@
+ function renderConvList() {
+   const list = $('#convList');
+   list.innerHTML = '';
+-  if (!state.convs.length) {
++  if (!state.convs.length && !state.customModels.length) {
+     const p = document.createElement('div');
+     p.className = 'conv-empty';
+     p.textContent = '还没有聊天';
+@@ -197,9 +221,60 @@
+     b.title = c.title;
+     b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
+     list.appendChild(b);
++  }
++  for (const m of state.customModels) {
++    const b = document.createElement('button');
++    b.type = 'button';
++    b.className = 'conv-item' + (state.cur === 'custom:' + m.id ? ' active' : '');
++    b.textContent = m.name;
++    b.onclick = () => { selectCustomModel(m); closeSidebarMobile(); };
++    list.appendChild(b);
+   }
+ }
+ 
++function selectCustomModel(m) {
++  if (state.ws) { state.ws.close(); state.ws = null; }
++  state.cur = 'custom:' + m.id;
++  state.curInfo = null;
++  state.target = { id: m.id, name: m.name, custom: true };
++  setTarget(state.target);
++  $('#convTitle').textContent = m.name;
++  $('#messages').innerHTML = '';
++  state.lastRenderTS = 0;
++  const history = state.customMessages.get(m.id) || [];
++  if (!history.length) appendWelcome(m.name);
++  for (const item of history) {
++    if (item.own) appendOwn(item.content, item.ts);
++    else appendAIStatic(m.name, item.content, item.ts);
++  }
++  const controls = document.createElement('div'); controls.className = 'custom-controls';
++  if (m.url) {
++    appendOfficialReadingLinks(controls, m);
++  } else {
++    const upload = document.createElement('button'); upload.type = 'button'; upload.textContent = '上传 TXT';
++    upload.onclick = () => promptTXTUpload(m); controls.appendChild(upload);
++  }
++  $('#messages').prepend(controls);
++  renderConvList();
++  scrollBottom(true);
++}
++
++function appendOfficialReadingLinks(container, m) {
++  let host = '';
++  try { host = new URL(m.url).hostname; } catch {}
++  if (host === 'fanqienovel.com') {
++    const shelf = document.createElement('a');
++    shelf.href = 'https://fanqienovel.com/bookshelf?enter_from=menu';
++    shelf.target = '_blank'; shelf.rel = 'noopener noreferrer';
++    shelf.textContent = '登录 / 打开番茄书架 ↗';
++    container.appendChild(shelf);
++  }
++  const source = document.createElement('a');
++  source.href = m.url; source.target = '_blank'; source.rel = 'noopener noreferrer';
++  source.textContent = '阅读该章节 ↗';
++  container.appendChild(source);
++}
++
+ /* ---------- 聊天切换与消息渲染 ---------- */
+ 
+ async function selectConv(id) {
+@@ -270,12 +345,17 @@
+   if (ts) {
+     ensureDivider(ts);
+     b.title = fullStamp(ts);
++    const time = document.createElement('div');
++    time.className = 'msg-own-time';
++    time.textContent = fmtDividerLabel(ts);
++    time.title = fullStamp(ts);
++    wrap.appendChild(time);
+   }
+   wrap.appendChild(b);
+   $('#messages').appendChild(wrap);
+ }
+ 
+-function appendAIRow(nickname) {
++function appendAIRow(nickname, ts) {
+   removeWelcome();
+   const row = document.createElement('div');
+   row.className = 'msg-ai';
+@@ -283,13 +363,20 @@
+   label.className = 'ai-label';
+   label.textContent = nickname;
+   row.appendChild(label);
++  if (ts) {
++    const time = document.createElement('div');
++    time.className = 'msg-ai-time';
++    time.textContent = fmtDividerLabel(ts);
++    time.title = fullStamp(ts);
++    row.appendChild(time);
++  }
+   $('#messages').appendChild(row);
+   return { row, label };
+ }
+ 
+ function appendAIStatic(nickname, content, ts) {
+   if (ts) ensureDivider(ts);
+-  const r = appendAIRow(nickname);
++  const r = appendAIRow(nickname, ts);
+   const body = document.createElement('div');
+   body.className = 'ai-body';
+   body.textContent = content;
+@@ -477,7 +564,7 @@
+ function animateAI(item) {
+   if (item.gen !== state.gen) { state.animating = false; pumpQueue(); return; }
+   if (item.ts) ensureDivider(item.ts);
+-  const r = appendAIRow(item.nickname);
++  const r = appendAIRow(item.nickname, item.ts);
+   let body;
+   if (item.thinkSec >= 1) {
+     const th = document.createElement('div');
+@@ -524,7 +611,7 @@
+ const modelMenu = $('#modelMenu');
+ 
+ function setTarget(m) {
+-  state.target = { id: m.id, name: m.name };
++  state.target = { id: m.id, name: m.name, custom: !!m.custom };
+   modelLabel.textContent = m.name;
+   $('#effortLabel').style.display = 'inline';
+   modelBtn.style.display = 'flex';
+@@ -537,12 +624,11 @@
+     const d = await api('/api/models');
+     const models = d.models || [];
+     modelMenu.innerHTML = '';
+-    if (!models.length) {
++    if (!models.length && !state.customModels.length) {
+       const p = document.createElement('div');
+       p.className = 'conv-empty';
+       p.textContent = '暂时没有其他模型';
+       modelMenu.appendChild(p);
+-      return;
+     }
+     const descs = ['适合日常问答与闲聊', '擅长推理与长文本', '创意写作与头脑风暴', '代码与技术问题', '轻量高效，响应最快'];
+     models.forEach((mo, i) => {
+@@ -564,6 +650,20 @@
+       b.onclick = () => { setTarget(mo); closeModelMenu(); };
+       modelMenu.appendChild(b);
+     });
++    state.customModels.forEach(m => {
++      const b = document.createElement('button');
++      b.type = 'button'; b.className = 'model-item';
++      const name = document.createElement('div'); name.className = 'm-name'; name.textContent = m.name;
++      const desc = document.createElement('div'); desc.className = 'm-desc';
++      desc.textContent = m.url ? '已连接内容来源' : (m.position ? '继续阅读' : '等待添加内容');
++      b.append(name, desc);
++      b.onclick = () => { selectCustomModel(m); closeModelMenu(); };
++      modelMenu.appendChild(b);
++    });
++    const add = document.createElement('button');
++    add.type = 'button'; add.className = 'model-item'; add.textContent = '＋ 添加自定义模型';
++    add.onclick = () => { closeModelMenu(); openCustomModelModal(); };
++    modelMenu.appendChild(add);
+   } catch (e) {
+     modelMenu.classList.add('hidden');
+     toast(e.message);
+@@ -572,6 +672,55 @@
+ 
+ function closeModelMenu() { modelMenu.classList.add('hidden'); }
+ 
++function openCustomModelModal() {
++  const root = $('#modalRoot');
++  root.innerHTML = '';
++  const backdrop = document.createElement('div'); backdrop.className = 'overlay';
++  const modal = document.createElement('form'); modal.className = 'modal';
++  const title = document.createElement('h3'); title.textContent = '添加自定义模型';
++  const sub = document.createElement('p'); sub.className = 'modal-sub'; sub.textContent = '填写名称；可添加小说链接，或创建后上传 TXT。';
++  const name = document.createElement('input'); name.placeholder = '模型名称'; name.maxLength = 40; name.required = true;
++  const url = document.createElement('input'); url.placeholder = '小说链接（可选）'; url.type = 'url';
++  const actions = document.createElement('div'); actions.className = 'modal-actions';
++  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
++  cancel.onclick = () => { root.innerHTML = ''; };
++  const save = document.createElement('button'); save.type = 'submit'; save.textContent = '添加'; save.className = 'btn-primary';
++  actions.append(cancel, save); modal.append(title, sub, name, url, actions); backdrop.appendChild(modal); root.appendChild(backdrop);
++  backdrop.onclick = e => { if (e.target === backdrop) root.innerHTML = ''; };
++  modal.onsubmit = async e => {
++    e.preventDefault(); save.disabled = true;
++    try {
++      const d = await api('/api/custom-models', { body: { name: name.value.trim(), url: url.value.trim() } });
++      root.innerHTML = '';
++      await loadCustomModels();
++      const m = state.customModels.find(x => x.id === d.model.id) || d.model;
++      selectCustomModel(m);
++      if (!m.url) promptTXTUpload(m);
++    } catch (err) { toast(err.message); save.disabled = false; }
++  };
++  name.focus();
++}
++
++function promptTXTUpload(m) {
++  const file = document.createElement('input');
++  file.type = 'file'; file.accept = '.txt,text/plain'; file.hidden = true;
++  document.body.appendChild(file);
++  file.onchange = async () => {
++    try {
++      const selected = file.files[0];
++      if (!selected) return;
++      if (selected.size > 2 * 1024 * 1024) throw new Error('TXT 文件不能超过 2 MB');
++      const text = await selected.text();
++      await api('/api/custom-models/' + m.id + '/text', { method: 'PUT', body: { text } });
++      m.position = 0;
++      toast('内容已添加，输入“继续”开始阅读');
++      renderConvList();
++    } catch (err) { toast(err.message); }
++    finally { file.remove(); }
++  };
++  file.click();
++}
++
+ /* ---------- “完全访问”选择（纯装饰，维持 AI 网站观感） ---------- */
+ 
+ const accessBtn = $('#btnAccess');
+@@ -622,6 +771,7 @@
+   const text = input.value.trim();
+   if (!text) return;
+   if (!state.target) { toast('请先在左下角选择一个模型'); return; }
++  if (state.target.custom) { await sendCustom(text); return; }
+   input.value = '';
+   autoGrow();
+   btnSend.disabled = true;
+@@ -650,6 +800,50 @@
+   }
+ }
+ 
++async function sendCustom(text) {
++  const m = state.customModels.find(x => x.id === state.target.id);
++  if (!m) return;
++  if (state.cur !== 'custom:' + m.id) selectCustomModel(m);
++  input.value = ''; autoGrow(); btnSend.disabled = true;
++  const ts = Math.floor(Date.now() / 1000);
++  appendOwn(text, ts);
++  const history = state.customMessages.get(m.id) || [];
++  history.push({ own: true, content: text, ts });
++  state.customMessages.set(m.id, history);
++  try {
++    let reply;
++    if (m.url) {
++      reply = new URL(m.url).hostname === 'fanqienovel.com'
++        ? '请在番茄小说官网登录后阅读。登录状态保留在番茄网站，当前聊天不能自动读取会员正文。'
++        : '请到来源网站阅读。网站登录状态不会自动传给当前聊天。';
++    } else {
++      const d = await api('/api/custom-models/' + m.id + '/next', { method: 'POST', body: {} });
++      reply = d.content || '已读完';
++      m.position += [...reply].length;
++    }
++    const replyTS = Math.floor(Date.now() / 1000);
++    appendAIStatic(m.name, reply, replyTS);
++    if (m.url) {
++      const rows = $('#messages').querySelectorAll('.msg-ai');
++      const actions = document.createElement('div'); actions.className = 'custom-controls custom-reply-links';
++      appendOfficialReadingLinks(actions, m);
++      rows[rows.length - 1].appendChild(actions);
++    }
++    history.push({ own: false, content: reply, ts: replyTS });
++    if (history.length > 100) history.splice(0, history.length - 100);
++    localStorage.setItem('cngp_custom_history_' + state.me.id, JSON.stringify(Object.fromEntries(state.customMessages)));
++    scrollBottom(true);
++  } catch (err) {
++    const message = '暂时无法读取正文：' + err.message;
++    const replyTS = Math.floor(Date.now() / 1000);
++    appendAIStatic(m.name, message, replyTS);
++    history.push({ own: false, content: message, ts: replyTS });
++    if (history.length > 100) history.splice(0, history.length - 100);
++    localStorage.setItem('cngp_custom_history_' + state.me.id, JSON.stringify(Object.fromEntries(state.customMessages)));
++    scrollBottom(true);
++  }
++}
++
+ function autoGrow() {
+   input.style.height = 'auto';
+   input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+Index: web/style.css
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>* { box-sizing: border-box; margin: 0; padding: 0; }\nhtml, body { height: 100%; }\nbody {\n  font-family: ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Microsoft YaHei\", \"PingFang SC\", sans-serif;\n  font-size: 16px;\n  color: #ececec;\n  background: #1e1e1e;\n  overflow: hidden;\n}\n.hidden { display: none !important; }\nbutton { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }\ninput, textarea { font: inherit; color: inherit; }\n\n/* ---------- auth ---------- */\n.auth-view {\n  position: fixed; inset: 0; z-index: 10;\n  display: flex; align-items: center; justify-content: center;\n  background: radial-gradient(1100px 600px at 50% -10%, #2a2a35 0%, #0d0d0d 60%);\n}\n.auth-card {\n  width: 380px; max-width: calc(100vw - 32px);\n  background: #2f2f2f; border: 1px solid rgba(255,255,255,.06);\n  border-radius: 18px; padding: 34px 30px 30px;\n  box-shadow: 0 20px 60px rgba(0,0,0,.5);\n}\n.auth-logo { font-size: 26px; font-weight: 700; text-align: center; letter-spacing: -.5px; color: #fff; }\n.auth-sub { font-size: 13px; color: #9b9b9b; text-align: center; margin: 6px 0 22px; }\n.auth-tabs { display: flex; background: #262626; border-radius: 10px; padding: 4px; margin-bottom: 18px; }\n.auth-tabs button { flex: 1; padding: 8px 0; border-radius: 8px; font-size: 14px; color: #9b9b9b; }\n.auth-tabs button.active { background: #1e1e1e; color: #fff; font-weight: 600; }\n.auth-card input {\n  width: 100%; background: #262626; border: 1px solid #3f3f3f; border-radius: 10px;\n  padding: 11px 13px; outline: none; margin-bottom: 12px; font-size: 14px; color: #ececec;\n}\n.auth-card input::placeholder { color: #8e8e8e; }\n.auth-card input:focus { border-color: #6b6b6b; }\n.form-error { color: #ff6b6b; font-size: 13px; min-height: 18px; margin: -4px 0 8px; }\n.btn-primary { width: 100%; background: #fff; color: #0d0d0d; border-radius: 10px; padding: 12px 0; font-weight: 600; }\n.btn-primary:hover { background: #e3e3e3; }\n.name-row { display: flex; gap: 8px; margin-bottom: 12px; }\n.name-row input { flex: 1; margin-bottom: 0; }\n.name-row button {\n  flex: none; width: 42px;\n  border: 1px solid #3f3f3f; border-radius: 10px;\n  font-size: 16px; color: #b4b4b4;\n}\n.name-row button:hover { background: rgba(255,255,255,.06); }\n\n/* ---------- layout ---------- */\n.app { display: flex; height: 100vh; height: 100dvh; }\n\n/* sidebar */\n#sidebar {\n  width: 260px; flex: none;\n  background: #171717; color: #e3e3e3;\n  display: flex; flex-direction: column; padding: 12px 10px;\n}\n.brand { font-weight: 700; font-size: 15px; padding: 6px 8px 14px; color: #fff; letter-spacing: -.3px; }\n#convList { flex: 1; overflow-y: auto; margin-top: 6px; }\n.conv-item {\n  display: block; width: 100%; text-align: left;\n  padding: 10px; border-radius: 10px;\n  font-size: 14px; color: #dcdcdc;\n  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n.conv-item:hover { background: #262626; }\n.conv-item.active { background: #323232; }\n.conv-empty { color: #8e8e8e; font-size: 13px; padding: 8px 10px; }\n.side-foot { border-top: 1px solid #2a2a2a; padding-top: 10px; }\n.user-chip { display: flex; align-items: center; gap: 10px; padding: 6px 8px; }\n.avatar {\n  width: 30px; height: 30px; border-radius: 50%;\n  background: #19c37d; color: #064e35;\n  font-size: 14px; font-weight: 700;\n  display: flex; align-items: center; justify-content: center; flex: none;\n}\n.uname { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n#btnLogout { color: #999; font-size: 13px; padding: 4px 8px; border-radius: 8px; }\n#btnLogout:hover { background: #2a2a2a; color: #fff; }\n.side-mask { display: none; }\n\n/* main */\n.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #1e1e1e; }\n.chat-head {\n  display: flex; align-items: center; gap: 8px;\n  height: 52px; padding: 0 16px;\n  border-bottom: 1px solid #2f2f2f; flex: none;\n}\n.chat-title { flex: 1; font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.icon-btn { font-size: 18px; padding: 4px 8px; border-radius: 8px; color: #b4b4b4; }\n.icon-btn:hover { background: rgba(255,255,255,.08); }\n.mobile-only { display: none; }\n\n/* messages */\n.msg-scroll { flex: 1; overflow-y: auto; }\n.msg-col { max-width: 768px; margin: 0 auto; padding: 28px 20px 10px; }\n.time-divider {\n  text-align: center; font-size: 12px; color: #8e8e8e;\n  margin: 6px 0 16px; user-select: none; letter-spacing: .3px;\n}\n.welcome { text-align: center; padding-top: 18vh; }\n.welcome h1 { font-size: 30px; font-weight: 650; letter-spacing: -.5px; color: #ececec; }\n.welcome p { color: #9b9b9b; margin-top: 10px; font-size: 14px; }\n.msg-own { display: flex; justify-content: flex-end; margin: 0 0 14px; }\n.msg-own .bubble {\n  background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;\n  white-space: pre-wrap; word-break: break-word; line-height: 1.65; font-size: 15.5px;\n}\n.msg-ai { margin: 0 0 26px; }\n.ai-label { font-size: 12.5px; font-weight: 600; color: #8e8e8e; margin-bottom: 3px; }\n.ai-body { white-space: pre-wrap; word-break: break-word; line-height: 1.75; font-size: 15.5px; }\n.cursor {\n  display: inline-block; width: 9px; height: 17px; margin-left: 2px; vertical-align: -3px;\n  background: #ececec; border-radius: 1px; animation: blink 1.05s steps(1) infinite;\n}\n@keyframes blink { 50% { opacity: 0; } }\n\n/* “思考中 · Ns” —— 对方输入时显示，形似推理模型的 thinking 指示 */\n.thinking-body { display: flex; align-items: center; gap: 8px; }\n.thinking-text {\n  font-size: 15.5px; font-weight: 600;\n  background: linear-gradient(90deg, #5c5c5c 25%, #d6d6d6 50%, #5c5c5c 75%);\n  background-size: 200% 100%;\n  -webkit-background-clip: text; background-clip: text;\n  -webkit-text-fill-color: transparent; color: transparent;\n  animation: shimmer 1.6s linear infinite;\n}\n.thinking-sec { font-size: 12.5px; color: #8e8e8e; }\n@keyframes shimmer {\n  0% { background-position: 200% 0; }\n  100% { background-position: -200% 0; }\n}\n.thought-line { font-size: 12.5px; color: #9b9b9b; margin-bottom: 6px; }\n.typing-dots { display: inline-flex; gap: 3px; }\n.typing-dots i { width: 5px; height: 5px; border-radius: 50%; background: #7a7a7a; animation: dot 1.2s infinite; }\n.typing-dots i:nth-child(2) { animation-delay: .15s; }\n.typing-dots i:nth-child(3) { animation-delay: .3s; }\n@keyframes dot {\n  0%, 60%, 100% { transform: translateY(0); opacity: .5; }\n  30% { transform: translateY(-3px); opacity: 1; }\n}\n\n/* composer（双行：上输入区，下工具栏） */\n.composer-wrap { flex: none; position: relative; padding: 6px 16px 14px; background: linear-gradient(transparent, #1e1e1e 30%); }\n.composer {\n  display: flex; flex-direction: column; gap: 2px;\n  max-width: 768px; margin: 0 auto;\n  background: #2f2f2f; border: 1px solid rgba(255,255,255,.07);\n  border-radius: 26px;\n  padding: 12px 12px 10px 16px;\n  box-shadow: 0 2px 16px rgba(0,0,0,.25);\n}\n#input {\n  width: 100%; border: 0; outline: none; resize: none; background: transparent;\n  max-height: 180px; line-height: 1.6; padding: 2px 4px 8px; color: #ececec;\n}\n#input::placeholder { color: #8e8e8e; }\n.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }\n.bar-left, .bar-right { display: flex; align-items: center; gap: 6px; min-width: 0; }\n.ghost-btn {\n  width: 32px; height: 32px; border-radius: 50%;\n  display: flex; align-items: center; justify-content: center;\n  color: #b4b4b4; flex: none;\n}\n.ghost-btn:hover { background: rgba(255,255,255,.08); }\n.access-btn {\n  display: flex; align-items: center; gap: 5px;\n  color: #ec8d4e; font-size: 13.5px; font-weight: 600;\n  padding: 6px 10px; border-radius: 12px;\n}\n.access-btn:hover { background: rgba(255,255,255,.08); }\n.access-btn .chev { color: #ec8d4e; font-size: 10px; }\n.ring-btn {\n  width: 30px; height: 30px; border-radius: 50%; flex: none;\n  display: flex; align-items: center; justify-content: center;\n}\n.ring-btn:hover { background: rgba(255,255,255,.08); }\n.ring { width: 15px; height: 15px; border-radius: 50%; border: 2.5px solid #34d399; }\n.model-btn {\n  display: flex; align-items: center; gap: 6px;\n  padding: 6px 10px; border-radius: 12px;\n  max-width: 280px; min-width: 0;\n}\n.model-btn:hover { background: rgba(255,255,255,.08); }\n.model-btn .m-name-label {\n  font-weight: 600; font-size: 14px; color: #ececec;\n  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;\n}\n.model-btn .m-effort { font-size: 13px; color: #8e8e8e; flex: none; }\n.model-btn .chev { font-size: 10px; color: #8e8e8e; flex: none; }\n#btnSend {\n  width: 34px; height: 34px; border-radius: 50%; flex: none;\n  background: #4f4f4f; color: #fff;\n  display: flex; align-items: center; justify-content: center;\n  transition: background .15s;\n}\n#btnSend:disabled { background: #383838; color: #777; cursor: default; }\n#btnSend:not(:disabled):hover { background: #5f5f5f; }\n.composer-hint { text-align: center; font-size: 12px; color: #7a7a7a; margin-top: 8px; }\n\n/* 下拉菜单（模型 / 完全访问） */\n.model-menu {\n  position: absolute; bottom: calc(100% - 4px); left: 16px;\n  width: 330px; max-width: calc(100vw - 32px);\n  background: #2f2f2f; border: 1px solid #3f3f3f; border-radius: 14px;\n  box-shadow: 0 12px 40px rgba(0,0,0,.45);\n  padding: 6px; z-index: 30; max-height: 330px; overflow-y: auto;\n}\n.model-item { display: block; width: 100%; text-align: left; padding: 9px 12px; border-radius: 10px; }\n.model-item:hover { background: rgba(255,255,255,.06); }\n.model-item .m-name { font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; color: #ececec; }\n.model-item .m-desc { font-size: 12px; color: #8e8e8e; margin-top: 2px; }\n.model-item .m-check { color: #ececec; font-weight: 700; }\n.access-menu { width: 220px; }\n\n/* modal */\n.overlay {\n  position: fixed; inset: 0; z-index: 50;\n  background: rgba(0,0,0,.55);\n  display: flex; align-items: center; justify-content: center;\n}\n.modal {\n  width: 400px; max-width: calc(100vw - 32px);\n  background: #2f2f2f; border: 1px solid rgba(255,255,255,.06);\n  border-radius: 16px; padding: 24px;\n  box-shadow: 0 18px 50px rgba(0,0,0,.45);\n}\n.modal h3 { font-size: 17px; margin-bottom: 4px; color: #ececec; }\n.modal .modal-sub { font-size: 13px; color: #9b9b9b; margin-bottom: 16px; }\n.modal input {\n  width: 100%; background: #262626; border: 1px solid #3f3f3f; border-radius: 10px;\n  padding: 11px 13px; outline: none; margin-bottom: 12px; font-size: 14px; color: #ececec;\n}\n.modal input::placeholder { color: #8e8e8e; }\n.modal input:focus { border-color: #6b6b6b; }\n.modal-actions { display: flex; gap: 10px; margin-top: 6px; }\n.modal-actions button { flex: 1; padding: 11px 0; border-radius: 10px; font-weight: 600; }\n.btn-cancel { background: #3a3a3a; color: #ececec; }\n.btn-cancel:hover { background: #454545; }\n.btn-ok { background: #fff; color: #0d0d0d; }\n.btn-ok:hover { background: #e3e3e3; }\n.link-box {\n  font-family: ui-monospace, Consolas, monospace;\n  font-size: 14px;\n  background: #262626; border: 1px dashed #4a4a4a; border-radius: 12px;\n  text-align: center; padding: 13px 12px; margin: 6px 0 14px;\n  word-break: break-all; user-select: all; color: #ececec;\n}\n\n/* toast */\n#toast {\n  position: fixed; left: 50%; bottom: 110px;\n  transform: translateX(-50%) translateY(20px);\n  background: #2f2f2f; border: 1px solid #454545; color: #ececec;\n  font-size: 14px; border-radius: 10px; padding: 10px 18px;\n  opacity: 0; pointer-events: none; transition: .25s;\n  z-index: 99; max-width: 80vw;\n}\n#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }\n\n/* scrollbar */\n::-webkit-scrollbar { width: 8px; }\n::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 4px; }\n#sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); }\n\n@media (max-width: 768px) {\n  .mobile-only { display: inline-flex; }\n  #sidebar {\n    position: fixed; z-index: 40; top: 0; left: 0; bottom: 0;\n    transform: translateX(-100%); transition: transform .25s;\n    box-shadow: 8px 0 30px rgba(0,0,0,.4);\n  }\n  #sidebar.open { transform: translateX(0); }\n  .side-mask.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 39; }\n  .msg-col { padding: 20px 14px 10px; }\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/web/style.css b/web/style.css
+--- a/web/style.css	(revision 6b5abba1ec138663846f5b6ee60bb802fd157c30)
++++ b/web/style.css	(date 1794897941897)
+@@ -102,13 +102,18 @@
+ .welcome { text-align: center; padding-top: 18vh; }
+ .welcome h1 { font-size: 30px; font-weight: 650; letter-spacing: -.5px; color: #ececec; }
+ .welcome p { color: #9b9b9b; margin-top: 10px; font-size: 14px; }
+-.msg-own { display: flex; justify-content: flex-end; margin: 0 0 14px; }
++.msg-own { display: flex; flex-direction: column; align-items: flex-end; margin: 0 0 14px; }
++.msg-own-time { color: #8e8e8e; font-size: 12px; margin: 0 8px 5px; }
+ .msg-own .bubble {
+   background: #2f2f2f; border-radius: 22px; padding: 10px 18px; max-width: 72%;
+   white-space: pre-wrap; word-break: break-word; line-height: 1.65; font-size: 15.5px;
+ }
+ .msg-ai { margin: 0 0 26px; }
+ .ai-label { font-size: 12.5px; font-weight: 600; color: #8e8e8e; margin-bottom: 3px; }
++.msg-ai-time { color: #8e8e8e; font-size: 12px; margin-bottom: 5px; }
++.custom-controls { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 18px; font-size: 13px; }
++.custom-reply-links { margin: 10px 0 0; }
++.custom-controls a, .custom-controls button { color: #b7c9ff; text-decoration: underline; }
+ .ai-body { white-space: pre-wrap; word-break: break-word; line-height: 1.75; font-size: 15.5px; }
+ .cursor {
+   display: inline-block; width: 9px; height: 17px; margin-left: 2px; vertical-align: -3px;
