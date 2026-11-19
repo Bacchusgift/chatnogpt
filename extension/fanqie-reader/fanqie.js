@@ -1,5 +1,10 @@
 'use strict';
 
+(() => {
+let runtime;
+try { runtime = chrome.runtime; } catch { return; }
+if (!runtime?.onMessage || globalThis.__cngpFanqieReaderInstalled) return;
+
 function extractChapter() {
   const root = document.querySelector('.muye-reader-content');
   if (!root) return { error: '当前页面没有章节正文；请先打开章节并登录番茄' };
@@ -40,10 +45,15 @@ async function changeChapter(op) {
   return extractChapter();
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+try { runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.type !== 'reader-control') return;
-  const action = message.op === 'next' || message.op === 'previous'
-    ? changeChapter(message.op) : Promise.resolve(extractChapter());
+  const action = Promise.resolve().then(() => message.op === 'next' || message.op === 'previous'
+    ? changeChapter(message.op) : extractChapter());
   action.then(respond, error => respond({ error: error.message || '读取章节失败' }));
   return true;
 });
+globalThis.__cngpFanqieReaderInstalled = true;
+} catch (error) {
+  if (!/context invalidated/i.test(error?.message || '')) throw error;
+}
+})();

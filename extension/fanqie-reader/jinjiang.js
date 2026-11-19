@@ -1,5 +1,10 @@
 'use strict';
 
+(() => {
+let runtime;
+try { runtime = chrome.runtime; } catch { return; }
+if (!runtime?.onMessage || globalThis.__cngpJinjiangReaderInstalled) return;
+
 function jinjiangChapter() {
   const page = new URL(location.href);
   if (!page.searchParams.has('chapterid'))
@@ -27,9 +32,14 @@ function jinjiangChangeChapter(op) {
   return { navigate: link.href };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+try { runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.type !== 'reader-control') return;
   respond(message.op === 'next' || message.op === 'previous'
     ? jinjiangChangeChapter(message.op) : jinjiangChapter());
   return true;
 });
+globalThis.__cngpJinjiangReaderInstalled = true;
+} catch (error) {
+  if (!/context invalidated/i.test(error?.message || '')) throw error;
+}
+})();

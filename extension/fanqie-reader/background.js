@@ -2,6 +2,28 @@
 
 const readerTabByChat = new Map();
 
+// Reloading the extension invalidates existing content scripts. Reinject into
+// already-open supported tabs without navigating or refreshing them.
+async function reconnectOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: [
+    'https://chatnogpt.autowired.cn/*', 'http://127.0.0.1/*', 'http://localhost/*',
+    'https://fanqienovel.com/*', 'https://www.jjwxc.net/*', 'https://jjwxc.net/*',
+  ] });
+  await Promise.allSettled(tabs.map(async tab => {
+    if (!tab.id || !tab.url) return;
+    const url = new URL(tab.url);
+    const isChat = url.origin === 'https://chatnogpt.autowired.cn' ||
+      (url.protocol === 'http:' && url.port === '8080' && ['127.0.0.1', 'localhost'].includes(url.hostname));
+    const kind = readerSource(tab.url)?.kind;
+    const file = isChat ? 'chat.js' : kind === 'fanqie' ? 'fanqie.js' : kind === 'jinjiang' ? 'jinjiang.js' : null;
+    if (file) await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
+  }));
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  reconnectOpenTabs().catch(error => console.warn('阅读扩展恢复连接失败:', error.message));
+});
+
 function withTimeout(promise, ms, message) {
   let timer;
   return Promise.race([promise, new Promise((_, reject) => {
@@ -88,9 +110,11 @@ async function changeFanqieChapter(tabId, op, cachedBefore) {
   if (before?.error || !before?.text) return before || { error: '当前番茄章节无法读取' };
   const label = op === 'next' ? '下一章' : '上一章';
   let first;
+  let lastError = '';
   try {
     first = await withTimeout(readChapter(tabId, op, 'fanqie'), 18000, `${label}读取超时`);
-  } catch { /* 跳转会销毁旧页面的消息通道，继续读取新页面。 */ }
+    lastError = first?.error || '';
+  } catch (error) { lastError = error?.message || '来源页面没有返回翻章结果'; }
   if (first?.text && first.text !== before.text) return first;
   if (first?.error && /无法进入|找不到/.test(first.error)) return first;
   const started = Date.now();
@@ -99,9 +123,11 @@ async function changeFanqieChapter(tabId, op, cachedBefore) {
     try {
       const result = await withTimeout(readChapter(tabId, 'attach', 'fanqie'), 3000, '新章节读取超时');
       if (result?.text && result.text !== before.text) return result;
-    } catch {}
+      if (result?.error) lastError = result.error;
+      else if (result?.text && !lastError) lastError = '来源页返回的仍是当前章节';
+    } catch (error) { lastError = error?.message || '读取来源页失败'; }
   }
-  return { error: `${label}后尚未读到完整的新章节；当前章节已保留，请检查来源阅读框后重试。` };
+  return { error: `${label}后未读到新章节${lastError ? '：' + lastError : ''}；当前章节已保留。` };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
