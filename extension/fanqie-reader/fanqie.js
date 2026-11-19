@@ -23,15 +23,13 @@ async function changeChapter(op) {
   const label = op === 'next' ? '下一章' : '上一章';
   const button = [...document.querySelectorAll('button')].find(x => x.textContent.trim() === label);
   if (!button || button.disabled) return { error: `当前页面无法进入${label}` };
-  const beforeURL = location.href;
   const beforeText = document.querySelector('.muye-reader-content')?.textContent;
   button.click();
   const changed = await new Promise(resolve => {
     const started = Date.now();
     const timer = setInterval(() => {
-      if (location.href !== beforeURL ||
-          (document.querySelector('.muye-reader-content')?.textContent !== beforeText &&
-           document.querySelector('.muye-reader-content')?.textContent?.length > 100)) {
+      if (document.querySelector('.muye-reader-content')?.textContent !== beforeText &&
+          document.querySelector('.muye-reader-content')?.textContent?.length > 100) {
         clearInterval(timer); resolve(true);
       } else if (Date.now() - started > 15000) {
         clearInterval(timer); resolve(false);

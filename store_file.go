@@ -307,6 +307,9 @@ func (s *fileStore) JoinConv(u *User, code, title string) (convBrief, error) {
 	c := s.d.Convs[cid]
 	local := title
 	if m, exists := c.Members[u.ID]; exists {
+		if m.DeletedAt != 0 || (m.ArchivedAt > 0 && now()-m.ArchivedAt >= archiveRetentionSeconds) {
+			return convBrief{}, ErrBadCode
+		}
 		local = m.Title
 	} else {
 		c.Members[u.ID] = &Member{UserID: u.ID, Title: title, JoinedAt: now()}
@@ -331,10 +334,11 @@ func (s *fileStore) peerOf(c *fileConv, userID string) (string, string) {
 func (s *fileStore) ListConvs(userID string) []convSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	out := []convSummary{}
 	for _, c := range s.d.Convs {
 		m, ok := c.Members[userID]
-		if !ok {
+		if !ok || m.DeletedAt != 0 {
 			continue
 		}
 		last := int64(0)
@@ -348,7 +352,7 @@ func (s *fileStore) ListConvs(userID string) []convSummary {
 		}
 		out = append(out, convSummary{
 			ID: c.ID, Title: m.Title, Code: c.Code, Kind: c.Kind,
-			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last, UnreadCount: m.UnreadCount,
+			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last, UnreadCount: m.UnreadCount, ArchivedAt: m.ArchivedAt,
 			PeerID: peerID, PeerNickname: peerNick,
 		})
 	}
@@ -361,15 +365,63 @@ func (s *fileStore) ListConvs(userID string) []convSummary {
 	return out
 }
 
+const archiveRetentionSeconds = 30 * 24 * 60 * 60
+
+func (s *fileStore) purgeExpiredArchivesLocked() {
+	changed := false
+	for _, c := range s.d.Convs {
+		for _, m := range c.Members {
+			if m.DeletedAt == 0 && m.ArchivedAt > 0 && now()-m.ArchivedAt >= archiveRetentionSeconds {
+				m.DeletedAt = now()
+				m.ArchivedAt = 0
+				changed = true
+			}
+		}
+	}
+	if changed {
+		s.saveLocked()
+	}
+}
+
+func (s *fileStore) PurgeExpiredArchives() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
+	return nil
+}
+
+func (s *fileStore) SetConvArchived(convID, userID string, archived bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
+	c := s.d.Convs[convID]
+	if c == nil {
+		return ErrNotFound
+	}
+	m := c.Members[userID]
+	if m == nil || m.DeletedAt != 0 {
+		return ErrNotFound
+	}
+	if archived {
+		m.ArchivedAt = now()
+		m.UnreadCount = 0
+	} else {
+		m.ArchivedAt = 0
+	}
+	s.saveLocked()
+	return nil
+}
+
 func (s *fileStore) MarkConvRead(convID, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	c, ok := s.d.Convs[convID]
 	if !ok {
 		return ErrNotFound
 	}
 	m, ok := c.Members[userID]
-	if !ok {
+	if !ok || m.DeletedAt != 0 {
 		return ErrForbidden
 	}
 	if m.UnreadCount != 0 {
@@ -383,11 +435,12 @@ func (s *fileStore) MarkConvRead(convID, userID string) error {
 func (s *fileStore) GetConv(convID, userID string) (*Conv, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	c, ok := s.d.Convs[convID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if _, member := c.Members[userID]; !member {
+	if m, member := c.Members[userID]; !member || m.DeletedAt != 0 {
 		return nil, ErrForbidden
 	}
 	return &Conv{ID: c.ID, Code: c.Code, Title: c.Title, CreatorID: c.CreatorID,
@@ -397,12 +450,13 @@ func (s *fileStore) GetConv(convID, userID string) (*Conv, error) {
 func (s *fileStore) ConvDetail(convID, userID string) (convOut, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	c, ok := s.d.Convs[convID]
 	if !ok {
 		return convOut{}, ErrNotFound
 	}
 	m, member := c.Members[userID]
-	if !member {
+	if !member || m.DeletedAt != 0 {
 		return convOut{}, ErrForbidden
 	}
 	members := make([]publicMember, 0, len(c.Members))
@@ -448,7 +502,7 @@ func (s *fileStore) convWith(aID, bID string, createNew bool) (convBrief, error)
 	var latest *fileConv
 	if !createNew {
 		for _, c := range s.d.Convs {
-			if c.Kind == 0 && len(c.Members) == 2 && c.Members[aID] != nil && c.Members[bID] != nil &&
+			if c.Kind == 0 && len(c.Members) == 2 && c.Members[aID] != nil && c.Members[aID].DeletedAt == 0 && c.Members[aID].ArchivedAt == 0 && c.Members[bID] != nil &&
 				(latest == nil || c.CreatedNS > latest.CreatedNS || c.CreatedNS == latest.CreatedNS && (c.CreatedAt > latest.CreatedAt || c.CreatedAt == latest.CreatedAt && c.ID > latest.ID)) {
 				latest = c
 			}
@@ -522,7 +576,7 @@ func (s *fileStore) CanReadImage(id, userID string) (string, bool) {
 		return rec.OwnerID, true
 	}
 	for _, c := range s.d.Convs {
-		if c.Members[userID] == nil {
+		if c.Members[userID] == nil || c.Members[userID].DeletedAt != 0 {
 			continue
 		}
 		for _, m := range c.Messages {
@@ -559,11 +613,12 @@ func (s *fileStore) AddMessage(convID, senderID, nickname, content, clientMsgID 
 func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	c, ok := s.d.Convs[convID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if _, member := c.Members[senderID]; !member {
+	if member, ok := c.Members[senderID]; !ok || member.DeletedAt != 0 {
 		return nil, ErrForbidden
 	}
 	if imageID != "" {
@@ -599,14 +654,49 @@ func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, cli
 	return m, nil
 }
 
-func (s *fileStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error) {
+func (s *fileStore) UpdateOwnMessage(convID, senderID, msgID, content string, recall bool) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
 	c, ok := s.d.Convs[convID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	if _, member := c.Members[userID]; !member {
+	if member, ok := c.Members[senderID]; !ok || member.DeletedAt != 0 {
+		return nil, ErrForbidden
+	}
+	for _, m := range c.Messages {
+		if m.ID != msgID {
+			continue
+		}
+		if m.SenderID != senderID {
+			return nil, ErrForbidden
+		}
+		if m.Content == recalledMessageText && m.ImageID == "" {
+			return nil, ErrForbidden
+		}
+		if recall {
+			m.Content = recalledMessageText
+			m.ImageID = ""
+		} else {
+			m.Content = content
+		}
+		s.saveLocked()
+		copy := *m
+		return &copy, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (s *fileStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredArchivesLocked()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if member, ok := c.Members[userID]; !ok || member.DeletedAt != 0 {
 		return nil, ErrForbidden
 	}
 	if limit <= 0 || limit > 500 {

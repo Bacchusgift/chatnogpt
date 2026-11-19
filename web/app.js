@@ -175,6 +175,30 @@ const EFFORTS = [
   { k: 'off', label: '关闭', desc: '显示真实对话' },
   { k: 'max', label: '最高', desc: '对话显示为技术分析，悬停查看原文' },
 ];
+const archiveKey = () => 'cngp_archived_' + (state.me?.id || 'guest');
+function localArchives() {
+  try {
+    const value = JSON.parse(localStorage.getItem(archiveKey()) || '{}');
+    if (Array.isArray(value)) return Object.fromEntries(value.map(id => [id, Date.now()]));
+    return value && typeof value === 'object' ? value : {};
+  } catch { return {}; }
+}
+const archivedConvs = () => new Set([...state.convs.filter(c => c.archived_at).map(c => c.id), ...Object.keys(localArchives())]);
+function saveLocalArchives(value) { localStorage.setItem(archiveKey(), JSON.stringify(value)); }
+function purgeLocalArchives() {
+  const value = localArchives(); let changed = false;
+  for (const [id, at] of Object.entries(value)) {
+    if (Date.now() - Number(at) < 30 * 86400000) continue;
+    delete value[id]; changed = true;
+    if (id.startsWith('novel:')) {
+      const modelID = id.slice(6);
+      delete novelHistory[modelID]; delete novelChapters[modelID]; delete novelHistorySources[modelID];
+      novelSave();
+    }
+  }
+  if (changed) saveLocalArchives(value);
+}
+let showArchivedConvs = false;
 
 function coverKeyHash(s) {
   let h = 5381;
@@ -266,7 +290,8 @@ function makeCoverLayer(hasImage = false) {
 function coverTextInto(row) {
   const layer = row.querySelector('.cover-layer');
   if (!layer) return;
-  const text = coverTextFor(row.dataset.msgKey || '');
+  const text = row.classList.contains('novel-ai') && typeof novelCoverTextFor === 'function'
+    ? novelCoverTextFor(row.dataset.msgKey || '') : coverTextFor(row.dataset.msgKey || '');
   const target = layer.querySelector('.cover-body');
   if (target) target.textContent = text;
   const tag = layer.querySelector('.cover-tag');
@@ -278,7 +303,7 @@ function bindFlashlight(row) {
   if (row.dataset.fxBound) return;
   row.dataset.fxBound = '1';
   const track = e => {
-    if (!row.classList.contains('covered')) return;
+    if (!row.classList.contains('covered') && !row.classList.contains('novel-force-cover')) return;
     const rect = row.getBoundingClientRect();
     row.style.setProperty('--fx', (e.clientX - rect.left) + 'px');
     row.style.setProperty('--fy', (e.clientY - rect.top) + 'px');
@@ -288,7 +313,7 @@ function bindFlashlight(row) {
   };
   row.addEventListener('pointermove', e => {
     track(e);
-    if (state.coverMode && !row.classList.contains('reveal-active')) {
+    if ((state.coverMode || row.classList.contains('novel-force-cover')) && !row.classList.contains('reveal-active')) {
       const sc = document.querySelector('#msgScroll');
       const top = sc.scrollTop;
       row.classList.add('reveal-active');
@@ -297,7 +322,7 @@ function bindFlashlight(row) {
   });
   row.addEventListener('pointerleave', () => row.classList.remove('reveal-active'));
   row.addEventListener('pointerdown', e => {
-    if (!row.classList.contains('covered') || e.pointerType === 'mouse') return;
+    if ((!row.classList.contains('covered') && !row.classList.contains('novel-force-cover')) || e.pointerType === 'mouse') return;
     track(e);
     row.classList.add('flash');
     clearTimeout(row.flashTimer);
@@ -349,6 +374,14 @@ function setEffort(k) {
   }
 }
 
+function setRevealOpacity(value) {
+  const opacity = Math.max(0, Math.min(100, Number(value)));
+  localStorage.setItem('cngp_reveal_opacity', String(opacity));
+  document.documentElement.style.setProperty('--reveal-outline-alpha', String(opacity / 100));
+  const label = document.querySelector('#revealOpacityValue');
+  if (label) label.textContent = opacity + '%';
+}
+
 /* ---------- api ---------- */
 
 async function api(path, opts = {}) {
@@ -384,6 +417,7 @@ function showApp() {
   // 恢复上次选择的思考强度
   $('#effortModeLabel').textContent = state.coverMode ? '最高' : '关闭';
   document.body.classList.toggle('cover-on', state.coverMode);
+  setRevealOpacity(localStorage.getItem('cngp_reveal_opacity') || 100);
   if (!state.cur) {
     $('#messages').replaceChildren();
     appendWelcome('ChatNoGPT');
@@ -454,7 +488,14 @@ function doLogoutLocal() {
 
 async function loadConvs(silent = false) {
   try {
-    const d = await api('/api/conversations');
+    let d = await api('/api/conversations');
+    const legacy = localArchives(); let migrated = false;
+    for (const c of d.conversations || []) {
+      if (!(c.id in legacy)) continue;
+      if (!c.archived_at) await api('/api/conversations/' + encodeURIComponent(c.id) + '/archive', { method: 'PUT' });
+      delete legacy[c.id]; migrated = true;
+    }
+    if (migrated) { saveLocalArchives(legacy); d = await api('/api/conversations'); }
     const hadConvs = state.convs.length > 0;
     const prevUnread = new Map(state.convs.map(c => [c.id, c.unread_count || 0]));
     state.convs = d.conversations || [];
@@ -467,7 +508,10 @@ async function loadConvs(silent = false) {
       }
     }
     renderConvList();
-    if (!state.cur && state.convs.length) selectConv(state.convs[0].id);
+    if (!state.cur) {
+      const first = state.convs.find(c => !archivedConvs().has(c.id));
+      if (first) selectConv(first.id);
+    }
   } catch (e) { if (!silent) toast(e.message); }
 }
 
@@ -517,7 +561,14 @@ function renderConvList() {
     list.appendChild(p);
     return;
   }
+  const archived = archivedConvs();
+  const toggle = document.createElement('button');
+  toggle.type = 'button'; toggle.className = 'archive-toggle';
+  toggle.textContent = showArchivedConvs ? '返回会话' : `归档 (${archived.size})`;
+  toggle.onclick = () => { showArchivedConvs = !showArchivedConvs; renderConvList(); };
+  list.appendChild(toggle);
   for (const c of state.convs) {
+    if (archived.has(c.id) !== showArchivedConvs) continue;
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
@@ -527,9 +578,45 @@ function renderConvList() {
     b.title = c.title + '（双击修改标题）';
     b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
     b.ondblclick = () => renameConv(c.id, c.title);
-    list.appendChild(b);
+    appendConversationListItem(list, b, c.id);
   }
   novelRenderList(list);
+}
+
+function appendConversationListItem(list, button, id) {
+  const wrap = document.createElement('div'); wrap.className = 'conv-entry';
+  const action = document.createElement('button'); action.type = 'button'; action.className = 'conv-archive';
+  const archived = archivedConvs().has(id);
+  action.textContent = archived ? '还原' : '归档';
+  action.title = archived ? '从归档中还原' : '归档并隐藏';
+  action.setAttribute('aria-label', action.title);
+  action.onclick = async () => {
+    let set = archivedConvs();
+    const willArchive = !set.has(id);
+    try {
+      if (id.startsWith('novel:')) {
+        const value = localArchives();
+        if (willArchive) value[id] = Date.now(); else delete value[id];
+        saveLocalArchives(value);
+      } else {
+        await api('/api/conversations/' + encodeURIComponent(id) + '/archive', { method: willArchive ? 'PUT' : 'DELETE' });
+        await loadConvs(true);
+      }
+    } catch (e) { toast(e.message); return; }
+    set = archivedConvs();
+    if (state.cur === id && set.has(id)) {
+      const next = state.convs.find(c => !set.has(c.id)) || novelModels.find(m => !set.has('novel:' + m.id));
+      if (next) { if (next.url !== undefined) novelSelect(next); else selectConv(next.id); }
+      else {
+        if (state.ws) { state.ws.close(); state.ws = null; }
+        state.cur = null; state.curInfo = null; state.target = null;
+        $('#messages').replaceChildren(); appendWelcome('ChatNoGPT'); $('#convTitle').textContent = 'ChatNoGPT';
+        $('#modelBtn').style.display = 'none'; $('#btnRenameConv').classList.add('hidden');
+      }
+    }
+    renderConvList();
+  };
+  wrap.append(button, action); list.appendChild(wrap);
 }
 
 function openPicker(title) {
@@ -783,7 +870,7 @@ async function appendImage(parent, id) {
   const peerCovered = () => state.coverMode && !!img.closest('.msg-ai');
   img.onclick = () => {
     // 密文模式的对方图片只能通过原位圆孔查看，不能弹出无遮罩原图。
-    if (!peerCovered()) window.open(img.src, '_blank', 'noopener,noreferrer');
+    if (!peerCovered()) openImageLightbox(img.src);
   };
   img.oncontextmenu = e => { if (peerCovered()) e.preventDefault(); };
   img.ondragstart = e => { if (peerCovered()) e.preventDefault(); };
@@ -796,10 +883,29 @@ async function appendImage(parent, id) {
   };
 }
 
-function appendOwn(content, ts, msgId, imageID) {
+function openImageLightbox(src) {
+  if (!src) return;
+  document.querySelector('.image-lightbox')?.remove();
+  const overlay = document.createElement('div'); overlay.className = 'image-lightbox';
+  overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', '图片预览');
+  const image = document.createElement('img'); image.src = src; image.alt = '聊天图片预览';
+  const close = document.createElement('button'); close.type = 'button';
+  close.className = 'image-lightbox-close'; close.setAttribute('aria-label', '关闭预览'); close.textContent = '×';
+  const dismiss = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = event => { if (event.key === 'Escape') dismiss(); };
+  close.onclick = dismiss;
+  overlay.onclick = event => { if (event.target === overlay) dismiss(); };
+  overlay.append(image, close); document.body.appendChild(overlay);
+  document.addEventListener('keydown', onKey); close.focus();
+}
+
+function appendOwn(content, ts, msgId, imageID, localID = '') {
   removeWelcome();
   const wrap = document.createElement('div');
   wrap.className = 'msg-own';
+  if (msgId) wrap.dataset.msgId = msgId;
+  if (localID) wrap.dataset.localId = localID;
   const realWrap = document.createElement('div');
   realWrap.className = 'real-wrap';
   const b = document.createElement('div');
@@ -827,9 +933,92 @@ function appendOwn(content, ts, msgId, imageID) {
   }
   realWrap.appendChild(b);
   wrap.appendChild(realWrap);
+  const actions = document.createElement('div');
+  actions.className = 'own-actions';
+  const copy = makeMessageAction('复制', messageCopyIcon);
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(wrap.querySelector('.own-original')?.textContent || ''); toast('已复制'); } catch { toast('复制失败'); } };
+  const recall = makeMessageAction('撤回', '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M9 9 5 13l4 4M5 13h9a5 5 0 1 0 0-10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  recall.onclick = () => changeOwnMessage(wrap, true);
+  const edit = makeMessageAction('编辑', '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="m4 20 4.5-1 11-11a2 2 0 0 0-3-3l-11 11L4 20ZM14 7l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  edit.onclick = () => editOwnMessage(wrap);
+  actions.append(copy, recall, edit);
+  wrap.appendChild(actions);
   if (state.coverMode && (content || imageID)) wrap.classList.add('covered');
   $('#messages').appendChild(wrap);
   bindOwnReveal(wrap);
+  if (content === '消息已撤回' && !imageID) wrap.classList.add('recalled');
+  return wrap;
+}
+
+function renderOwnChange(wrap, message) {
+  const bubble = wrap.querySelector('.bubble');
+  bubble.replaceChildren();
+  const original = document.createElement('span'); original.className = 'own-original'; original.textContent = message.content;
+  const covered = document.createElement('span'); covered.className = 'own-cover'; covered.textContent = ownCoverText(message.content);
+  bubble.append(original, covered);
+  if (message.image_id) {
+    appendImage(bubble, message.image_id); wrap.classList.add('has-image');
+    const marker = document.createElement('span'); marker.className = 'image-placeholder'; marker.textContent = '[image]'; bubble.appendChild(marker);
+  }
+  else wrap.classList.remove('has-image');
+  const recalled = message.content === '消息已撤回' && !message.image_id;
+  wrap.classList.toggle('recalled', recalled);
+  if (recalled) wrap.classList.remove('covered');
+}
+
+async function changeOwnMessage(wrap, recall, content = '') {
+  if (wrap.classList.contains('recalled')) return;
+  if (!wrap.dataset.msgId && !wrap.dataset.localId) { toast('消息正在发送，请稍后再试'); return; }
+  if (recall && !window.confirm('撤回这条消息并放回输入框？')) return;
+  const originalText = wrap.querySelector('.own-original')?.textContent || '';
+  try {
+    let message;
+    if (wrap.dataset.localId) message = novelUpdateOwnEntry(wrap.dataset.localId, recall, content);
+    else {
+      const id = wrap.dataset.msgId;
+      const d = await api(`/api/conversations/${state.cur}/messages/${id}`, recall ? { method: 'DELETE' } : { method: 'PATCH', body: { content } });
+      message = d.message;
+    }
+    renderOwnChange(wrap, message);
+    if (recall && originalText) {
+      input.value = input.value.trim() ? originalText + '\n' + input.value : originalText;
+      autoGrow(); updateSendButton(); input.focus();
+    }
+    return true;
+  } catch (e) { toast(e.message); return false; }
+}
+
+function editOwnMessage(wrap) {
+  if (wrap.classList.contains('recalled')) return;
+  if (!wrap.dataset.msgId && !wrap.dataset.localId) { toast('消息正在发送，请稍后再试'); return; }
+  document.querySelectorAll('.msg-own.editing').forEach(row => row.querySelector('.own-edit-cancel')?.click());
+  wrap.classList.add('editing');
+  const bubble = wrap.querySelector('.bubble');
+  const editor = document.createElement('div'); editor.className = 'own-edit-box';
+  const field = document.createElement('textarea'); field.className = 'own-edit-field';
+  field.value = wrap.querySelector('.own-original')?.textContent || '';
+  field.maxLength = 6000;
+  const bar = document.createElement('div'); bar.className = 'own-edit-bar';
+  const hint = document.createElement('span'); hint.textContent = '编辑后将更新这条消息';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'own-edit-cancel'; cancel.textContent = '取消';
+  const save = document.createElement('button'); save.type = 'button'; save.textContent = '保存';
+  const close = () => { editor.remove(); wrap.classList.remove('editing'); };
+  cancel.onclick = close;
+  save.onclick = async () => {
+    const value = field.value.trim();
+    if (!value) { toast('消息内容不能为空'); return; }
+    save.disabled = true;
+    if (await changeOwnMessage(wrap, false, value)) close();
+    else save.disabled = false;
+  };
+  field.onkeydown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); close(); }
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); save.click(); }
+  };
+  bar.append(hint, cancel, save);
+  editor.append(field, bar);
+  bubble.after(editor);
+  field.focus();
 }
 
 function appendAIRow(nickname) {
@@ -845,6 +1034,46 @@ function appendAIRow(nickname) {
   row.appendChild(realWrap);
   $('#messages').appendChild(row);
   return { row, label, realWrap };
+}
+
+const messageCopyIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.8"/></svg>';
+const messageRefreshIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 9A7 7 0 0 1 18 7l2 2M4 15l2 2a7 7 0 0 0 12.5-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const messageThumbIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M7 10v10H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h3Zm0 0 4-7a2 2 0 0 1 2-1c1.1 0 2 .9 2 2v5h4a3 3 0 0 1 2.9 3.8l-1.7 6A3 3 0 0 1 17.3 21H7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+
+function makeMessageAction(label, icon) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.title = label; button.setAttribute('aria-label', label);
+  button.innerHTML = icon;
+  return button;
+}
+
+function addMessageVotes(actions) {
+  const up = makeMessageAction('点赞', messageThumbIcon);
+  const down = makeMessageAction('点踩', messageThumbIcon);
+  down.classList.add('thumb-down');
+  for (const button of [up, down]) {
+    button.setAttribute('aria-pressed', 'false');
+    button.onclick = () => {
+      const selected = button.getAttribute('aria-pressed') === 'true';
+      up.setAttribute('aria-pressed', 'false'); down.setAttribute('aria-pressed', 'false');
+      if (!selected) button.setAttribute('aria-pressed', 'true');
+    };
+  }
+  actions.append(up, down);
+}
+
+function addAIActions(row, content) {
+  const actions = document.createElement('div'); actions.className = 'msg-actions';
+  const copy = makeMessageAction('复制', messageCopyIcon);
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(content); toast('已复制'); }
+    catch { toast('复制失败'); }
+  };
+  const refresh = makeMessageAction('刷新', messageRefreshIcon);
+  refresh.onclick = () => {};
+  actions.append(copy, refresh);
+  addMessageVotes(actions);
+  row.appendChild(actions);
 }
 
 function appendAIStatic(nickname, content, ts, msgId, imageID) {
@@ -866,6 +1095,7 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
     r.row.classList.add('covered');
     bindFlashlight(r.row);
   }
+  addAIActions(r.row, content);
 }
 
 // 历史消息懒加载：滚动到顶部时按游标拉更早的 100 条，前插并保持滚动位置
@@ -975,6 +1205,8 @@ async function syncMissed(id) {
       if (state.seenMsg.has(m.id)) continue;
       if (m.client_msg_id && state.pending.has(m.client_msg_id)) {
         state.pending.delete(m.client_msg_id);
+        const ownRow = [...document.querySelectorAll('#messages .msg-own')].find(row => row.dataset.clientMsgId === m.client_msg_id);
+        if (ownRow) ownRow.dataset.msgId = m.id;
         state.seenMsg.add(m.id);
         if (m.ts > state.lastTS) state.lastTS = m.ts;
         rememberRead(m.id);
@@ -1011,6 +1243,23 @@ function flushPending(id = state.cur) {
 
 function handleEvent(ev) {
   if (ev.conv_id && ev.conv_id !== state.cur) return;
+  if (ev.type === 'message_update' && ev.message) {
+    const row = [...document.querySelectorAll('#messages .msg-own')].find(item => item.dataset.msgId === ev.message.id);
+    if (row) renderOwnChange(row, ev.message);
+    const peerRow = [...document.querySelectorAll('#messages .msg-ai')].find(item => item.dataset.msgKey === ev.message.id);
+    if (peerRow) {
+      const body = peerRow.querySelector('.ai-body');
+      if (body) {
+        body.textContent = ev.message.content;
+        if (ev.message.image_id) appendImage(body, ev.message.image_id);
+        peerRow.classList.toggle('has-image', !!ev.message.image_id);
+        peerRow.querySelector('.msg-actions')?.remove();
+        addAIActions(peerRow, ev.message.content);
+        coverTextInto(peerRow);
+      }
+    }
+    return;
+  }
   if (ev.type === 'msg') {
     if (state.seenMsg.has(ev.id)) return;
     state.seenMsg.add(ev.id);
@@ -1019,6 +1268,8 @@ function handleEvent(ev) {
       // 自己发的：同标签页靠乐观渲染，这里只处理回显确认和其他标签页
       if (ev.client_msg_id && state.pending.has(ev.client_msg_id)) {
         state.pending.delete(ev.client_msg_id);
+        const ownRow = [...document.querySelectorAll('#messages .msg-own')].find(row => row.dataset.clientMsgId === ev.client_msg_id);
+        if (ownRow) ownRow.dataset.msgId = ev.id;
         rememberRead(ev.id);
         return;
       }
@@ -1181,6 +1432,7 @@ function animateAI(item) {
       cursor.remove();
       if (!disguised && item.imageID) appendImage(body, item.imageID);
       r.row.classList.remove('cover-typing');
+      addAIActions(r.row, item.content);
       rememberRead(item.msgKey);
       state.animating = false;
       if (state.coverMode && !disguised) coverAllVisible();
@@ -1287,6 +1539,12 @@ function renderEffortMenu() {
     b.onclick = () => { setEffort(opt.k); effortMenu.classList.add('hidden'); };
     effortMenu.appendChild(b);
   }
+  const sliderBox = document.createElement('div'); sliderBox.className = 'reveal-slider-box';
+  const sliderLabel = document.createElement('label'); sliderLabel.htmlFor = 'revealOpacity'; sliderLabel.textContent = '透视范围可见度';
+  const value = document.createElement('span'); value.id = 'revealOpacityValue'; value.textContent = (localStorage.getItem('cngp_reveal_opacity') || '100') + '%';
+  const slider = document.createElement('input'); slider.id = 'revealOpacity'; slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.step = '5'; slider.value = localStorage.getItem('cngp_reveal_opacity') ?? '100';
+  slider.oninput = () => setRevealOpacity(slider.value);
+  sliderBox.append(sliderLabel, value, slider); effortMenu.appendChild(sliderBox);
   if (state.coverMode && typeof novelResetRevealSelection === 'function') {
     const reset = document.createElement('button'); reset.type = 'button';
     reset.className = 'model-item'; reset.textContent = '重置大小';
@@ -1410,7 +1668,7 @@ function doSend(payload) {
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID);
+  appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID).dataset.clientMsgId = cmid;
   scrollFollow();
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: payload.text,
@@ -1571,7 +1829,30 @@ function bind() {
     render();
     const done = document.createElement('button'); done.type = 'button'; done.className = 'btn-primary'; done.textContent = '完成';
     done.onclick = () => root.replaceChildren();
-    panel.append(title, toggle, done); overlay.appendChild(panel); root.appendChild(overlay);
+    const archiveTitle = document.createElement('h4'); archiveTitle.textContent = '已归档聊天';
+    const archiveHint = document.createElement('p'); archiveHint.className = 'settings-hint';
+    archiveHint.textContent = '归档满 30 天后，从你的账号永久移除；其他成员保留记录。';
+    const archiveList = document.createElement('div'); archiveList.className = 'settings-archive-list';
+    const archived = state.convs.filter(c => c.archived_at).map(c => ({ id: c.id, title: c.title, at: c.archived_at * 1000 }));
+    for (const [id, at] of Object.entries(localArchives())) {
+      if (id.startsWith('novel:')) archived.push({ id, title: novelModels.find(m => m.id === id.slice(6))?.name || '阅读会话', at: Number(at) });
+    }
+    for (const item of archived) {
+      const row = document.createElement('div'); row.className = 'settings-archive-row';
+      const left = document.createElement('span');
+      left.textContent = item.title + ' · 剩余 ' + Math.max(0, Math.ceil((item.at + 30 * 86400000 - Date.now()) / 86400000)) + ' 天';
+      const restore = document.createElement('button'); restore.type = 'button'; restore.textContent = '恢复';
+      restore.onclick = async () => {
+        try {
+          if (item.id.startsWith('novel:')) { const value = localArchives(); delete value[item.id]; saveLocalArchives(value); }
+          else { await api('/api/conversations/' + encodeURIComponent(item.id) + '/archive', { method: 'DELETE' }); await loadConvs(true); }
+          row.remove(); renderConvList();
+        } catch (e) { toast(e.message); }
+      };
+      row.append(left, restore); archiveList.appendChild(row);
+    }
+    if (!archived.length) archiveList.textContent = '暂无归档聊天';
+    panel.append(title, toggle, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
     overlay.onclick = e => { if (e.target === overlay) root.replaceChildren(); };
   };
 

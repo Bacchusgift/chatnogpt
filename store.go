@@ -33,7 +33,11 @@ type Member struct {
 	Title       string `json:"title"` // 每个成员给会话自己取的名字
 	JoinedAt    int64  `json:"joined_at"`
 	UnreadCount int    `json:"unread_count,omitempty"`
+	ArchivedAt  int64  `json:"archived_at,omitempty"`
+	DeletedAt   int64  `json:"deleted_at,omitempty"`
 }
+
+const recalledMessageText = "消息已撤回"
 
 type Message struct {
 	ID          string `json:"id"`
@@ -71,6 +75,7 @@ type convSummary struct {
 	CreatedAt    int64  `json:"created_at"`
 	LastTS       int64  `json:"last_ts"`
 	UnreadCount  int    `json:"unread_count"`
+	ArchivedAt   int64  `json:"archived_at,omitempty"`
 	PeerID       string `json:"peer_id,omitempty"`
 	PeerNickname string `json:"peer_nickname,omitempty"`
 }
@@ -135,6 +140,8 @@ type Store interface {
 	CreateConv(u *User, title string) convBrief
 	JoinConv(u *User, code, title string) (convBrief, error)
 	ListConvs(userID string) []convSummary
+	SetConvArchived(convID, userID string, archived bool) error
+	PurgeExpiredArchives() error
 	MarkConvRead(convID, userID string) error
 	GetConv(convID, userID string) (*Conv, error)
 	ConvDetail(convID, userID string) (convOut, error)
@@ -147,6 +154,7 @@ type Store interface {
 	ListModels(exceptUserID string) []modelInfo
 	AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error)
 	AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error)
+	UpdateOwnMessage(convID, senderID, msgID, content string, recall bool) (*Message, error)
 	HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error)
 	CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error)
 	RoomMembers(convID, userID string) ([]string, error)

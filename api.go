@@ -310,6 +310,18 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/conversations/"), "/")
 	parts := strings.Split(rest, "/")
 	convID := parts[0]
+	if len(parts) == 2 && parts[1] == "archive" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) {
+		if err := s.store.SetConvArchived(convID, u.ID, r.Method == http.MethodPut); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if _, err := s.store.GetConv(convID, u.ID); err != nil {
+		writeErr(w, statusOf(err), err)
+		return
+	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		detail, err := s.store.ConvDetail(convID, u.ID)
@@ -343,6 +355,31 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "has_more": beforeTS > 0 && len(msgs) == limit})
+	case len(parts) == 3 && parts[1] == "messages" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
+		content := ""
+		recall := r.Method == http.MethodDelete
+		if !recall {
+			var req struct {
+				Content string `json:"content"`
+			}
+			if err := readJSON(r, &req); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			content = strings.TrimSpace(req.Content)
+			if content == "" || len([]rune(content)) > 6000 {
+				writeErr(w, http.StatusBadRequest, errors.New("消息内容须为 1 到 6000 字"))
+				return
+			}
+		}
+		msg, err := s.store.UpdateOwnMessage(convID, u.ID, parts[2], content, recall)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"message": msg})
+		payload, _ := json.Marshal(map[string]any{"type": "message_update", "conv_id": convID, "message": msg})
+		s.hub.broadcast(convID, payload, nil)
 	case len(parts) == 2 && parts[1] == "read" && r.Method == http.MethodPost:
 		if err := s.store.MarkConvRead(convID, u.ID); err != nil {
 			writeErr(w, statusOf(err), err)

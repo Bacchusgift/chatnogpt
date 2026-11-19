@@ -4,6 +4,10 @@
 let novelModels = [];
 let novelHistory = {};
 let novelChapters = {};
+let novelHistorySources = {};
+let novelDialogueBusy = false;
+let novelDialogueGeneration = 0;
+let novelReaderRequest = null;
 const novelFontCache = new Map();
 const novelBridgePending = new Map();
 let novelRevealShape = localStorage.getItem('cngp_reveal_shape') === 'rect' ? 'rect' : 'circle';
@@ -29,14 +33,23 @@ async function novelLoad() {
     novelModels = d.models || [];
     try { novelHistory = JSON.parse(localStorage.getItem('cngp_novel_history_' + state.me.id) || '{}'); } catch { novelHistory = {}; }
     try { novelChapters = JSON.parse(localStorage.getItem('cngp_novel_chapters_' + state.me.id) || '{}'); } catch { novelChapters = {}; }
-    let staleChapter = false;
+    try { novelHistorySources = JSON.parse(localStorage.getItem('cngp_novel_history_sources_' + state.me.id) || '{}'); } catch { novelHistorySources = {}; }
+    purgeLocalArchives();
+    let changed = false;
     for (const m of novelModels) {
-      if (novelChapters[m.id] && novelChapters[m.id].sourceURL !== m.url) {
+      const oldSource = novelHistorySources[m.id];
+      const staleChapter = novelChapters[m.id] && novelChapters[m.id].sourceURL !== m.url;
+      if ((oldSource !== undefined && oldSource !== m.url) || staleChapter) {
         delete novelChapters[m.id];
-        staleChapter = true;
+        delete novelHistory[m.id];
+        changed = true;
+      } else if (novelHistory[m.id]?.some(item => item.sourceURL !== undefined && item.sourceURL !== m.url)) {
+        novelHistory[m.id] = novelHistory[m.id].filter(item => item.sourceURL === undefined || item.sourceURL === m.url);
+        changed = true;
       }
+      if (oldSource !== m.url) { novelHistorySources[m.id] = m.url; changed = true; }
     }
-    if (staleChapter) novelSave();
+    if (changed) novelSave();
     renderConvList();
   } catch (e) { toast(e.message); }
 }
@@ -45,16 +58,18 @@ function novelSave() {
   try {
     localStorage.setItem('cngp_novel_history_' + state.me.id, JSON.stringify(novelHistory));
     localStorage.setItem('cngp_novel_chapters_' + state.me.id, JSON.stringify(novelChapters));
+    localStorage.setItem('cngp_novel_history_sources_' + state.me.id, JSON.stringify(novelHistorySources));
   } catch { toast('浏览器存储空间不足，请减少已导入的章节'); }
 }
 
 function novelRenderList(list) {
   for (const m of novelModels) {
+    if (archivedConvs().has('novel:' + m.id) !== showArchivedConvs) continue;
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'conv-item' + (state.cur === 'novel:' + m.id ? ' active' : '');
     b.textContent = m.name;
     b.onclick = () => { novelSelect(m); closeSidebarMobile(); };
-    list.appendChild(b);
+    appendConversationListItem(list, b, 'novel:' + m.id);
   }
 }
 
@@ -74,6 +89,9 @@ function novelSourceKind(raw) {
 function novelSourceLabel(m) { return novelSourceKind(m.url) === 'jinjiang' ? '晋江' : '番茄'; }
 
 function novelSelect(m) {
+  novelDialogueGeneration++;
+  novelDialogueBusy = false;
+  hideTyping();
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.cur = 'novel:' + m.id;
   state.gen++; state.queue = []; state.animating = false;
@@ -99,9 +117,17 @@ function novelSelect(m) {
   }
   box.appendChild(controls);
   if (novelSourceKind(m.url)) novelReaderPanel(box, m);
+  $('#msgScroll').onclick = event => {
+    if (state.cur !== 'novel:' + m.id || event.target.closest('button, a, .novel-browser')) return;
+    novelDialogueNext(m);
+  };
   for (const item of novelHistory[m.id] || []) {
-    if (item.own) appendOwn(item.text, item.ts, null, item.imageID);
-    else novelReply(m, item.text, item.ts, item.fontURL);
+    if (item.own) {
+      if (!item.localID) item.localID = crypto.randomUUID();
+      appendOwn(item.text, item.ts, null, item.imageID, item.localID);
+    } else {
+      for (const paragraph of item.text.split(/\n\s*\n/).filter(Boolean)) novelReply(m, paragraph, item.ts, item.fontURL, !!item.dialogue);
+    }
   }
   renderConvList(); scrollBottom(true);
 }
@@ -113,11 +139,17 @@ function novelBridgeRequest(op, m) {
       novelBridgePending.delete(id);
       const injected = document.documentElement.dataset.cngpReaderBridge === 'ready';
       resolve({ error: injected
-        ? '扩展脚本已进入聊天页，但后台没有响应；请打开扩展管理页的“错误”查看详情。'
+        ? '聊天页未收到扩展回复（桥接版本 ' +
+          (document.documentElement.dataset.cngpReaderBridgeVersion || '未知') + '）；请重新加载扩展并刷新聊天页。'
         : '扩展脚本尚未进入聊天页；请重新加载扩展并强制刷新聊天页（⌘⇧R）。' });
-    }, novelBridgeAvailable ? 20000 : 2500);
+    }, novelBridgeAvailable ? 45000 : 2500);
     novelBridgePending.set(id, { resolve, timer });
-    window.postMessage({ channel: 'cngp-reader-request', id, op, url: m.url }, location.origin);
+    const current = novelChapters[m.id];
+    const chapterURL = (op === 'next' || op === 'previous') && current?.sourceURL === m.url &&
+      novelSourceKind(current.url) === novelSourceKind(m.url)
+      ? current.url : m.url;
+    window.postMessage({ channel: 'cngp-reader-request', id, op, url: chapterURL,
+      before: current?.sourceURL === m.url ? { url: current.url, text: current.text } : null }, location.origin);
   });
 }
 
@@ -131,13 +163,45 @@ function novelReaderPanel(box, m) {
   next.onclick = () => novelReaderControl('next', m);
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = '连接 / 刷新';
   refresh.onclick = () => novelReaderControl('attach', m);
+  const collapse = document.createElement('button'); collapse.type = 'button'; collapse.textContent = '折叠阅读框';
+  collapse.onclick = () => {
+    if (panel.dataset.chapterReady !== '1') { toast('请先连接并读取正文'); return; }
+    panel.classList.add('collapsed', 'dialogue-on');
+    novelDialogueStatus(m);
+  };
   const source = document.createElement('a'); source.href = m.url; source.target = '_blank';
   source.rel = 'noopener noreferrer'; source.textContent = '在浏览器中打开 ↗';
-  toolbar.append(title, previous, next, refresh, source);
+  toolbar.append(title, previous, next, refresh, collapse, source);
   const status = document.createElement('div'); status.className = 'novel-browser-status';
   status.textContent = '点击“连接 / 刷新”，读取已登录的' + novelSourceLabel(m) + '标签页。';
   const content = document.createElement('article'); content.className = 'novel-browser-content';
-  panel.append(toolbar, status, content);
+  const compact = document.createElement('div'); compact.className = 'novel-compact';
+  const compactLabel = document.createElement('div'); compactLabel.className = 'ai-label';
+  compactLabel.textContent = m.name;
+  const compactBubble = document.createElement('button'); compactBubble.type = 'button';
+  compactBubble.className = 'novel-compact-bubble';
+  compactBubble.textContent = '我们可以从一个简单的问题开始，逐步整理相关信息。';
+  compactBubble.onclick = () => novelDialogueNext(m);
+  const compactActions = document.createElement('div'); compactActions.className = 'novel-compact-actions';
+  const compactCopy = document.createElement('button'); compactCopy.type = 'button';
+  compactCopy.title = '复制'; compactCopy.setAttribute('aria-label', '复制');
+  compactCopy.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.8"/></svg>';
+  compactCopy.onclick = async () => { try { await navigator.clipboard.writeText(compactBubble.textContent); toast('已复制'); } catch { toast('复制失败'); } };
+  const compactRefresh = document.createElement('button'); compactRefresh.type = 'button';
+  compactRefresh.title = '展开阅读框'; compactRefresh.setAttribute('aria-label', '展开阅读框');
+  compactRefresh.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 9A7 7 0 0 1 18 7l2 2M4 15l2 2a7 7 0 0 0 12.5-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  compactRefresh.onclick = () => { panel.classList.remove('collapsed', 'dialogue-on'); novelDialogueStatus(m); };
+  const compactPrevious = document.createElement('button'); compactPrevious.type = 'button';
+  compactPrevious.textContent = '<'; compactPrevious.title = '上一章'; compactPrevious.setAttribute('aria-label', '上一章');
+  compactPrevious.onclick = () => novelReaderControl('previous', m);
+  const compactNext = document.createElement('button'); compactNext.type = 'button';
+  compactNext.textContent = '>'; compactNext.title = '下一章'; compactNext.setAttribute('aria-label', '下一章');
+  compactNext.onclick = () => novelReaderControl('next', m);
+  compactActions.append(compactCopy, compactPrevious, compactNext, compactRefresh);
+  addMessageVotes(compactActions);
+  compact.append(compactLabel, compactBubble, compactActions);
+  panel.append(toolbar, status, content, compact);
+  panel.dataset.chapterReady = '0';
   novelCoverSetup(panel);
   box.appendChild(panel);
   const saved = novelChapters[m.id]?.sourceURL === m.url ? novelChapters[m.id] : null;
@@ -156,6 +220,14 @@ const novelScienceParagraphs = [
   '互联网传输信息时，会把数据拆成许多小包。每个包带有目标地址，经过网络设备转发后在目的地重新组合。分包方式使网络能够灵活处理不同路径和负载。',
   '科学解释通常从可检验的问题开始。提出假设后，通过观察或实验收集证据，再根据结果修正认识。一个可靠的结论，也应当经得起其他人重复检验。'
 ];
+
+function novelCoverTextFor(key) {
+  return novelScienceParagraphs[coverKeyHash(String(key)) % novelScienceParagraphs.length];
+}
+
+function novelDialogueText(text) {
+  return String(text || '');
+}
 
 function novelCoverSetup(panel) {
   const cover = document.createElement('div'); cover.className = 'novel-cover';
@@ -253,8 +325,17 @@ function novelSetReveal(panel, x, y, width, height) {
 }
 
 function novelCoverMode(max) {
-  if (!max) return;
-  novelResetRevealSelection();
+  if (max) novelResetRevealSelection();
+  document.querySelectorAll('#messages .novel-ai .novel-disguise-toggle').forEach(button => {
+    const disguised = novelDisguiseActive(button.closest('.novel-ai'));
+    button.title = disguised ? '除去伪装' : '穿上伪装';
+    button.setAttribute('aria-label', button.title);
+  });
+}
+
+function novelDisguiseActive(row) {
+  return row.classList.contains('novel-force-cover') ||
+    (state.coverMode && !row.classList.contains('novel-force-clear'));
 }
 
 function novelResetRevealSelection() {
@@ -268,16 +349,43 @@ function novelResetRevealSelection() {
 
 async function novelReaderControl(op, m) {
   const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
-  if (!panel) return;
+  if (!panel || novelReaderRequest) return;
   const status = panel.querySelector('.novel-browser-status');
-  status.textContent = '正在连接' + novelSourceLabel(m) + '标签页…';
+  status.textContent = op === 'next' ? '正在读取下一章…' : op === 'previous' ? '正在读取上一章…' :
+    '正在连接' + novelSourceLabel(m) + '标签页…';
   const requestedURL = m.url;
-  const result = await novelBridgeRequest(op, m);
+  const request = {};
+  novelReaderRequest = request;
+  let progress = null;
+  let timer = null;
+  if (panel.classList.contains('collapsed') && panel.classList.contains('dialogue-on')) {
+    progress = document.createElement('div'); progress.className = 'novel-reader-progress';
+    const progressLabel = document.createElement('div'); progressLabel.className = 'ai-label'; progressLabel.textContent = m.name;
+    const heading = document.createElement('div'); heading.className = 'novel-reader-progress-heading';
+    const spinner = document.createElement('span'); spinner.className = 'novel-reader-spinner';
+    const thinking = document.createElement('span'); thinking.className = 'thinking-text'; thinking.textContent = '思考中';
+    const elapsed = document.createElement('span'); elapsed.className = 'thinking-sec';
+    elapsed.textContent = '1s';
+    const started = Date.now();
+    timer = setInterval(() => { elapsed.textContent = Math.max(1, Math.round((Date.now() - started) / 1000)) + 's'; }, 400);
+    heading.append(spinner, thinking, elapsed);
+    const hint = document.createElement('div'); hint.className = 'novel-reader-progress-hint';
+    hint.textContent = op === 'next' ? '正在读取下一章，请稍候…' : op === 'previous' ? '正在读取上一章，请稍候…' : '正在读取当前章节，请稍候…';
+    progress.append(progressLabel, heading, hint);
+    $('#messages').appendChild(progress);
+    scrollFollow();
+  }
+  let result;
+  try { result = await novelBridgeRequest(op, m); }
+  finally { if (timer) clearInterval(timer); progress?.remove(); if (novelReaderRequest === request) novelReaderRequest = null; }
   if (state.cur !== 'novel:' + m.id || novelModels.find(model => model.id === m.id)?.url !== requestedURL) return;
-  if (result?.error) { status.textContent = result.error; return; }
-  if (result?.opened) { status.textContent = result.message; return; }
+  if (result?.error) { status.textContent = result.error; toast(result.error); return; }
+  if (result?.opened) { status.textContent = result.message; toast(result.message); return; }
   if (typeof result?.text !== 'string' || result.text.length < 100) {
-    status.textContent = novelSourceLabel(m) + '标签页没有可显示的完整章节'; return;
+    status.textContent = novelSourceLabel(m) + '标签页没有可显示的完整章节'; toast(status.textContent); return;
+  }
+  if ((op === 'next' || op === 'previous') && novelChapters[m.id]?.url === result.url && novelChapters[m.id]?.text === result.text) {
+    status.textContent = '来源页面仍是当前章节，请检查来源标签页'; toast(status.textContent); return;
   }
   novelReaderRender(m, result, true);
 }
@@ -296,11 +404,80 @@ function novelReaderRender(m, chapter, save) {
   content.textContent = chapter.text;
   content.style.fontFamily = family || '';
   content.scrollTop = 0;
+  panel.dataset.chapterReady = '1';
+  const changedChapter = !!novelChapters[m.id]?.text &&
+    (novelChapters[m.id].url !== chapter.url || novelChapters[m.id].text !== chapter.text);
+  if (changedChapter) {
+    novelDialogueGeneration++;
+    novelDialogueBusy = false;
+    hideTyping();
+    const box = $('#messages');
+    box.querySelectorAll('.novel-ai').forEach(row => row.remove());
+    novelHistory[m.id] = (novelHistory[m.id] || []).filter(item => item.own);
+    box.querySelectorAll('.time-divider').forEach(divider => {
+      if (!divider.nextElementSibling || divider.nextElementSibling.classList.contains('time-divider')) divider.remove();
+    });
+  }
   if (save) {
+    const prior = novelChapters[m.id];
     novelChapters[m.id] = { sourceURL: m.url, url: chapter.url, title: chapter.title, text: chapter.text,
-      fontURL: chapter.fontURL, paragraphs: chapter.paragraphs };
+      fontURL: chapter.fontURL, paragraphs: chapter.paragraphs,
+      dialogueIndex: prior?.url === chapter.url && prior.text === chapter.text ? prior.dialogueIndex || 0 : 0 };
     novelSave();
   }
+  novelDialogueStatus(m);
+}
+
+function novelDialogueStatus(m) {
+  const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
+  if (!panel) return;
+  const chapter = novelChapters[m.id];
+  if (!panel.classList.contains('dialogue-on')) {
+    if (chapter?.text) panel.querySelector('.novel-browser-status').textContent = '已连接 · ' +
+      (chapter.paragraphs || chapter.text.split('\n\n').length) + ' 段';
+    return;
+  }
+  const paragraphs = chapter?.text?.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean) || [];
+  panel.querySelector('.novel-browser-status').textContent = '已连接 · ' + paragraphs.length + ' 段';
+}
+
+async function novelDialogueNext(m) {
+  const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
+  if (!panel?.classList.contains('dialogue-on') || novelDialogueBusy) return;
+  const chapter = novelChapters[m.id];
+  if (!chapter?.text || chapter.sourceURL !== m.url) return;
+  const paragraphs = chapter.text.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  const index = chapter.dialogueIndex || 0;
+  if (index >= paragraphs.length) { novelDialogueStatus(m); return; }
+  novelDialogueBusy = true;
+  const generation = novelDialogueGeneration;
+  const paragraph = novelDialogueText(paragraphs[index]);
+  showTyping(m.name);
+  scrollBottom(true);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  if (generation !== novelDialogueGeneration || state.cur !== 'novel:' + m.id) return;
+  hideTyping();
+  const ts = Math.floor(Date.now() / 1000);
+  const body = novelReply(m, paragraph, ts, chapter.fontURL, true);
+  chapter.dialogueIndex = index + 1;
+  novelRemember(m, { text: paragraph, ts, fontURL: chapter.fontURL, dialogue: true });
+  const row = body.closest('.novel-ai');
+  const glyphs = Array.from(state.coverMode ? novelCoverTextFor(row.dataset.msgKey) : paragraph);
+  const output = state.coverMode ? row.querySelector('.cover-body') : body;
+  if (state.coverMode) row.classList.add('cover-typing');
+  output.textContent = '';
+  const cursor = document.createElement('span'); cursor.className = 'cursor';
+  const typed = document.createTextNode(''); output.append(typed, cursor);
+  for (let i = 0; i < glyphs.length; i += 2) {
+    if (generation !== novelDialogueGeneration || state.cur !== 'novel:' + m.id) return;
+    typed.textContent += glyphs.slice(i, i + 2).join('');
+    if (i % 12 === 0) scrollFollow();
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  cursor.remove();
+  row.classList.remove('cover-typing');
+  novelDialogueBusy = false;
+  scrollFollow();
 }
 
 function novelFontFamily(raw) {
@@ -319,9 +496,15 @@ function novelFontFamily(raw) {
   return novelFontCache.get(u.href);
 }
 
-function novelReply(m, text, ts, fontURL = '') {
+function novelReply(m, text, ts, fontURL = '', dialogueTyping = false) {
+  text = novelDialogueText(text);
   if (ts) ensureDivider(ts);
-  const { realWrap } = appendAIRow(m.name);
+  const { row, realWrap } = appendAIRow(m.name);
+  row.classList.add('msg-real', 'novel-ai');
+  row.dataset.modelId = m.id;
+  row.dataset.lastTs = String(ts || 0);
+  row.dataset.msgKey = msgKeyOf(null, m.name, text);
+  row.dataset.nickname = m.name;
   if (ts) {
     const time = document.createElement('div'); time.className = 'msg-ai-time';
     time.textContent = fmtDividerLabel(ts); time.title = fullStamp(ts); realWrap.appendChild(time);
@@ -330,24 +513,81 @@ function novelReply(m, text, ts, fontURL = '') {
   body.textContent = text;
   if (fontURL) body.style.fontFamily = novelFontFamily(fontURL);
   realWrap.appendChild(body);
+  row.appendChild(makeCoverLayer());
+  coverTextInto(row);
+  if (state.coverMode) { row.classList.add('covered'); bindFlashlight(row); }
+  if (dialogueTyping) row.classList.add('novel-dialogue-message');
+  const actions = document.createElement('div'); actions.className = 'novel-actions';
+  const copy = document.createElement('button'); copy.type = 'button'; copy.title = '复制';
+  copy.setAttribute('aria-label', '复制');
+  copy.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.8"/></svg>';
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(body.textContent); toast('已复制'); } catch { toast('复制失败'); } };
+  const previous = document.createElement('button'); previous.type = 'button';
+  previous.textContent = '<'; previous.title = '上一章'; previous.setAttribute('aria-label', '上一章');
+  previous.disabled = !novelSourceKind(m.url);
+  previous.onclick = () => novelReaderControl('previous', m);
+  const next = document.createElement('button'); next.type = 'button';
+  next.textContent = '>'; next.title = '下一章'; next.setAttribute('aria-label', '下一章');
+  next.disabled = !novelSourceKind(m.url);
+  next.onclick = () => novelReaderControl('next', m);
+  const disguise = document.createElement('button'); disguise.type = 'button';
+  disguise.className = 'novel-disguise-toggle';
+  disguise.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 9A7 7 0 0 1 18 7l2 2M4 15l2 2a7 7 0 0 0 12.5-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  const syncDisguise = () => {
+    disguise.title = novelDisguiseActive(row) ? '除去伪装' : '穿上伪装';
+    disguise.setAttribute('aria-label', disguise.title);
+  };
+  syncDisguise();
+  disguise.onclick = () => {
+    if (novelDisguiseActive(row)) {
+      row.classList.remove('novel-force-cover', 'reveal-active', 'flash');
+      row.classList.add('novel-force-clear');
+    } else {
+      row.classList.remove('novel-force-clear');
+      row.classList.add('novel-force-cover', 'covered');
+      coverTextInto(row);
+      bindFlashlight(row);
+    }
+    syncDisguise();
+  };
+  actions.append(copy, previous, next, disguise);
+  addMessageVotes(actions);
+  row.appendChild(actions);
   return body;
 }
 
 function novelRemember(m, item) {
   const entries = novelHistory[m.id] || [];
-  entries.push(item);
+  const entry = { ...item, localID: item.localID || crypto.randomUUID(), sourceURL: m.url || '' };
+  entries.push(entry);
   if (entries.length > 80) entries.splice(0, entries.length - 80);
   novelHistory[m.id] = entries;
   novelSave();
+  return entry;
+}
+
+function novelUpdateOwnEntry(localID, recall, content) {
+  const id = state.cur.startsWith('novel:') ? state.cur.slice(6) : '';
+  const item = (novelHistory[id] || []).find(entry => entry.own && entry.localID === localID);
+  if (!item) throw new Error('消息已不存在');
+  if (item.text === '消息已撤回' && !item.imageID) throw new Error('消息已撤回');
+  item.text = recall ? '消息已撤回' : content;
+  if (recall) item.imageID = '';
+  novelSave();
+  return { content: item.text, image_id: item.imageID };
 }
 
 async function novelSend(text, imageID = '') {
   const m = novelModels.find(x => x.id === state.target.id);
   if (!m) return;
+  novelDialogueGeneration++;
+  novelDialogueBusy = false;
+  hideTyping();
   if (state.cur !== 'novel:' + m.id) novelSelect(m);
   input.value = ''; autoGrow(); btnSend.disabled = true;
   const ts = Math.floor(Date.now() / 1000);
-  appendOwn(text, ts, null, imageID); novelRemember(m, { own: true, text, ts, imageID });
+  const entry = novelRemember(m, { own: true, text, ts, imageID });
+  appendOwn(text, ts, null, imageID, entry.localID);
   scrollFollow();
   if (!text) return;
   if (m.url) {
@@ -436,6 +676,7 @@ function novelEditURLModal(m) {
       m.url = nextURL;
       delete novelChapters[m.id];
       delete novelHistory[m.id];
+      novelHistorySources[m.id] = nextURL;
       novelSave();
       root.innerHTML = '';
       if (state.cur === 'novel:' + m.id) novelSelect(m);
