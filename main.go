@@ -170,6 +170,15 @@ func main() {
 		log.Printf("no database configured - using local file storage (%s)", filepath.Join(*dataDir, "data.json"))
 	}
 	srv := newServer(store)
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := store.PurgeExpiredArchives(); err != nil {
+				log.Printf("purge archived conversations: %v", err)
+			}
+		}
+	}()
 
 	if *open && isLoopbackAddr(*addr) {
 		go func() {

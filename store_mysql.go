@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS conv_members (
   title VARCHAR(120) NOT NULL DEFAULT '',
   joined_at BIGINT NOT NULL,
   unread_count INT NOT NULL DEFAULT 0,
+  archived_at BIGINT NOT NULL DEFAULT 0,
+  deleted_at BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (conv_id, user_id),
   KEY idx_cm_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -115,6 +117,12 @@ func newDBStore(dsn, dir string) (*dbStore, error) {
 	if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN unread_count INT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
 		db.Close()
 		return nil, fmt.Errorf("初始化未读计数: %w", err)
+	}
+	for _, column := range []string{"archived_at", "deleted_at"} {
+		if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN " + column + " BIGINT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
+			db.Close()
+			return nil, fmt.Errorf("初始化归档字段 %s: %w", column, err)
+		}
 	}
 	return &dbStore{db: db, dir: dir}, nil
 }
@@ -377,7 +385,8 @@ func (s *dbStore) JoinConv(u *User, code, title string) (convBrief, error) {
 		return convBrief{}, err
 	}
 	var local string
-	err = s.db.QueryRow("SELECT title FROM conv_members WHERE conv_id=? AND user_id=?", id, u.ID).Scan(&local)
+	var deletedAt, archivedAt int64
+	err = s.db.QueryRow("SELECT title, deleted_at, archived_at FROM conv_members WHERE conv_id=? AND user_id=?", id, u.ID).Scan(&local, &deletedAt, &archivedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		local = title
 		if _, err := s.db.Exec("INSERT INTO conv_members (conv_id, user_id, title, joined_at) VALUES (?,?,?,?)",
@@ -386,6 +395,9 @@ func (s *dbStore) JoinConv(u *User, code, title string) (convBrief, error) {
 		}
 	} else if err != nil {
 		return convBrief{}, err
+	}
+	if deletedAt != 0 || (archivedAt > 0 && now()-archivedAt >= archiveRetentionSeconds) {
+		return convBrief{}, ErrBadCode
 	}
 	return convBrief{ID: id, Title: local, Code: code, Kind: kind}, nil
 }
@@ -406,28 +418,29 @@ func (s *dbStore) peerOf(convID, userID string, memberCount int) (string, string
 }
 
 func (s *dbStore) ListConvs(userID string) []convSummary {
+	_ = s.PurgeExpiredArchives()
 	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at, cm.unread_count,
 		COALESCE((SELECT MAX(m.ts) FROM messages m WHERE m.conv_id=c.id), 0) AS last_ts,
-		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id) AS member_count
-		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=?`, userID)
+		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id) AS member_count, cm.archived_at
+		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? AND cm.deleted_at=0`, userID)
 	if err != nil {
 		return []convSummary{}
 	}
 	defer rows.Close()
 	out := []convSummary{}
 	type row0 struct {
-		id, title, code          string
-		kind                     int
-		createdAt, lastTS        int64
-		memberCount, unreadCount int
+		id, title, code               string
+		kind                          int
+		createdAt, lastTS, archivedAt int64
+		memberCount, unreadCount      int
 	}
 	for rows.Next() {
 		var r row0
-		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.unreadCount, &r.lastTS, &r.memberCount); err != nil {
+		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.unreadCount, &r.lastTS, &r.memberCount, &r.archivedAt); err != nil {
 			continue
 		}
 		out = append(out, convSummary{ID: r.id, Title: r.title, Code: r.code, Kind: r.kind,
-			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS, UnreadCount: r.unreadCount})
+			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS, UnreadCount: r.unreadCount, ArchivedAt: r.archivedAt})
 	}
 	for i := range out {
 		out[i].PeerID, out[i].PeerNickname = s.peerOf(out[i].ID, userID, out[i].MemberCount)
@@ -441,8 +454,35 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 	return out
 }
 
+func (s *dbStore) PurgeExpiredArchives() error {
+	_, err := s.db.Exec("UPDATE conv_members SET deleted_at=?, archived_at=0, unread_count=0 WHERE deleted_at=0 AND archived_at>0 AND archived_at<=?", now(), now()-archiveRetentionSeconds)
+	return err
+}
+
+func (s *dbStore) SetConvArchived(convID, userID string, archived bool) error {
+	if err := s.PurgeExpiredArchives(); err != nil {
+		return err
+	}
+	at := int64(0)
+	if archived {
+		at = now()
+	}
+	result, err := s.db.Exec("UPDATE conv_members SET archived_at=?, unread_count=0 WHERE conv_id=? AND user_id=? AND deleted_at=0", at, convID, userID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *dbStore) MarkConvRead(convID, userID string) error {
-	result, err := s.db.Exec("UPDATE conv_members SET unread_count=0 WHERE conv_id=? AND user_id=?", convID, userID)
+	result, err := s.db.Exec("UPDATE conv_members SET unread_count=0 WHERE conv_id=? AND user_id=? AND deleted_at=0", convID, userID)
 	if err != nil {
 		return err
 	}
@@ -452,7 +492,7 @@ func (s *dbStore) MarkConvRead(convID, userID string) error {
 	}
 	if n == 0 {
 		var exists int
-		if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?", convID, userID).Scan(&exists); err != nil {
+		if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=? AND deleted_at=0", convID, userID).Scan(&exists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -464,6 +504,9 @@ func (s *dbStore) MarkConvRead(convID, userID string) error {
 
 // GetConv only checks membership; details come from ConvDetail.
 func (s *dbStore) GetConv(convID, userID string) (*Conv, error) {
+	if err := s.PurgeExpiredArchives(); err != nil {
+		return nil, err
+	}
 	var c Conv
 	err := s.db.QueryRow("SELECT id, code, title, creator_id, created_at, created_ns, kind FROM convs WHERE id=?",
 		convID).Scan(&c.ID, &c.Code, &c.Title, &c.CreatorID, &c.CreatedAt, &c.CreatedNS, &c.Kind)
@@ -474,7 +517,7 @@ func (s *dbStore) GetConv(convID, userID string) (*Conv, error) {
 		return nil, err
 	}
 	var one int
-	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=? AND deleted_at=0",
 		convID, userID).Scan(&one); err != nil {
 		return nil, ErrForbidden
 	}
@@ -488,7 +531,7 @@ func (s *dbStore) ConvDetail(convID, userID string) (convOut, error) {
 	var myTitle string
 	err := s.db.QueryRow(`SELECT c.id, c.code, c.kind, c.creator_id, c.created_at, cm.title,
 		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id)
-		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? WHERE c.id=?`,
+		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? AND cm.deleted_at=0 WHERE c.id=?`,
 		userID, convID).Scan(&out.ID, &out.Code, &out.Kind, &out.CreatorID, &out.CreatedAt, &myTitle, &out.MemberCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return convOut{}, ErrNotFound
@@ -533,7 +576,7 @@ func (s *dbStore) convWith(aID, bID string, createNew bool) (convBrief, error) {
 		var id, myTitle, code string
 		var kind int
 		err := s.db.QueryRow(`SELECT c.id, me.title, c.code, c.kind FROM convs c
-			JOIN conv_members me ON me.conv_id=c.id AND me.user_id=?
+			JOIN conv_members me ON me.conv_id=c.id AND me.user_id=? AND me.deleted_at=0 AND me.archived_at=0
 			JOIN conv_members pe ON pe.conv_id=c.id AND pe.user_id=? AND pe.user_id<>me.user_id
 			WHERE c.kind=0 AND (SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id)=2
 			ORDER BY c.created_ns DESC LIMIT 1`, aID, bID).Scan(&id, &myTitle, &code, &kind)
@@ -598,7 +641,7 @@ func (s *dbStore) CanReadImage(id, userID string) (string, bool) {
 	var owner string
 	err := s.db.QueryRow(`SELECT i.owner_id FROM images i WHERE i.id=? AND
 		(i.owner_id=? OR EXISTS (SELECT 1 FROM messages m
-			JOIN conv_members cm ON cm.conv_id=m.conv_id AND cm.user_id=?
+			JOIN conv_members cm ON cm.conv_id=m.conv_id AND cm.user_id=? AND cm.deleted_at=0
 			WHERE m.image_id=i.id))`, id, userID, userID).Scan(&owner)
 	if err != nil {
 		return "", false
@@ -631,8 +674,11 @@ func (s *dbStore) AddMessage(convID, senderID, nickname, content, clientMsgID st
 }
 
 func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
+	if err := s.PurgeExpiredArchives(); err != nil {
+		return nil, err
+	}
 	var one int
-	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=? AND deleted_at=0",
 		convID, senderID).Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -673,6 +719,41 @@ func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clien
 	return m, nil
 }
 
+func (s *dbStore) UpdateOwnMessage(convID, senderID, msgID, content string, recall bool) (*Message, error) {
+	if err := s.PurgeExpiredArchives(); err != nil {
+		return nil, err
+	}
+	var member int
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=? AND deleted_at=0", convID, senderID).Scan(&member); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var m Message
+	err := s.db.QueryRow(`SELECT id, sender_id, nickname, content, ts, COALESCE(client_msg_id,''), COALESCE(image_id,'') FROM messages WHERE conv_id=? AND id=?`, convID, msgID).
+		Scan(&m.ID, &m.SenderID, &m.Nickname, &m.Content, &m.TS, &m.ClientMsgID, &m.ImageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if m.SenderID != senderID || (m.Content == recalledMessageText && m.ImageID == "") {
+		return nil, ErrForbidden
+	}
+	if recall {
+		m.Content = recalledMessageText
+		m.ImageID = ""
+	} else {
+		m.Content = content
+	}
+	if _, err = s.db.Exec("UPDATE messages SET content=?, image_id=? WHERE conv_id=? AND id=? AND sender_id=?", m.Content, nullStr(m.ImageID), convID, msgID, senderID); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 func (s *dbStore) messageByClientID(convID, clientMsgID string) *Message {
 	if clientMsgID == "" {
 		return nil
@@ -691,8 +772,11 @@ func (s *dbStore) messageByClientID(convID, clientMsgID string) *Message {
 // newer messages (reconnect resync); beforeTS>0 with beforeID pages older
 // history (lazy loading). limit<=0 defaults to 200.
 func (s *dbStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error) {
+	if err := s.PurgeExpiredArchives(); err != nil {
+		return nil, err
+	}
 	var one int
-	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+	if err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=? AND deleted_at=0",
 		convID, userID).Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -881,7 +965,7 @@ func (s *dbStore) SearchMessages(userID, query string, limit int) ([]SearchHit, 
 	rows, err := s.db.Query(`SELECT m.id, m.conv_id, m.sender_id, m.nickname, m.content, m.ts,
 		COALESCE(m.client_msg_id,''), COALESCE(m.image_id,''), COALESCE(NULLIF(mt.title,''), c.title)
 		FROM messages m
-		JOIN conv_members me ON me.conv_id=m.conv_id AND me.user_id=?
+		JOIN conv_members me ON me.conv_id=m.conv_id AND me.user_id=? AND me.deleted_at=0
 		LEFT JOIN conv_members mt ON mt.conv_id=m.conv_id AND mt.user_id=?
 		JOIN convs c ON c.id=m.conv_id
 		WHERE m.content LIKE ? ORDER BY m.ts DESC LIMIT ?`, userID, userID, pattern, limit)
