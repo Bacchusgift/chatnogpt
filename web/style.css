@@ -559,3 +559,9 @@ body.cover-on .msg-real.covered.flash::after {
 .settings-archive-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #3a3a3a; }
 .settings-archive-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-archive-row button { flex: none; padding: 5px 10px; border-radius: 7px; background: #373737; color: #eee; border: 0; cursor: pointer; }
+.novel-reader-progress { width: min(100%, 760px); margin: 18px auto; padding: 8px 0; }
+.novel-reader-progress-heading { display: flex; align-items: center; gap: 10px; }
+.novel-reader-progress-hint { margin: 5px 0 0 26px; color: #929292; font-size: 12px; }
+.novel-reader-progress .ai-label { margin-bottom: 5px; }
+.novel-reader-spinner { width: 16px; height: 16px; border: 2px solid #606060; border-top-color: #d6d6d6; border-radius: 50%; animation: novelReaderSpin .8s linear infinite; }
+@keyframes novelReaderSpin { to { transform: rotate(360deg); } }

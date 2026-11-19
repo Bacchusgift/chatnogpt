@@ -7,6 +7,7 @@ let novelChapters = {};
 let novelHistorySources = {};
 let novelDialogueBusy = false;
 let novelDialogueGeneration = 0;
+let novelReaderRequest = null;
 const novelFontCache = new Map();
 const novelBridgePending = new Map();
 let novelRevealShape = localStorage.getItem('cngp_reveal_shape') === 'rect' ? 'rect' : 'circle';
@@ -138,11 +139,17 @@ function novelBridgeRequest(op, m) {
       novelBridgePending.delete(id);
       const injected = document.documentElement.dataset.cngpReaderBridge === 'ready';
       resolve({ error: injected
-        ? '扩展脚本已进入聊天页，但后台没有响应；请打开扩展管理页的“错误”查看详情。'
+        ? '聊天页未收到扩展回复（桥接版本 ' +
+          (document.documentElement.dataset.cngpReaderBridgeVersion || '未知') + '）；请重新加载扩展并刷新聊天页。'
         : '扩展脚本尚未进入聊天页；请重新加载扩展并强制刷新聊天页（⌘⇧R）。' });
-    }, novelBridgeAvailable ? 20000 : 2500);
+    }, novelBridgeAvailable ? 45000 : 2500);
     novelBridgePending.set(id, { resolve, timer });
-    window.postMessage({ channel: 'cngp-reader-request', id, op, url: m.url }, location.origin);
+    const current = novelChapters[m.id];
+    const chapterURL = (op === 'next' || op === 'previous') && current?.sourceURL === m.url &&
+      novelSourceKind(current.url) === novelSourceKind(m.url)
+      ? current.url : m.url;
+    window.postMessage({ channel: 'cngp-reader-request', id, op, url: chapterURL,
+      before: current?.sourceURL === m.url ? { url: current.url, text: current.text } : null }, location.origin);
   });
 }
 
@@ -219,9 +226,7 @@ function novelCoverTextFor(key) {
 }
 
 function novelDialogueText(text) {
-  const trimmed = String(text || '').trim();
-  return trimmed.startsWith('【') && trimmed.endsWith('】')
-    ? trimmed.slice(1, -1).trim() : trimmed;
+  return String(text || '');
 }
 
 function novelCoverSetup(panel) {
@@ -344,16 +349,43 @@ function novelResetRevealSelection() {
 
 async function novelReaderControl(op, m) {
   const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
-  if (!panel) return;
+  if (!panel || novelReaderRequest) return;
   const status = panel.querySelector('.novel-browser-status');
-  status.textContent = '正在连接' + novelSourceLabel(m) + '标签页…';
+  status.textContent = op === 'next' ? '正在读取下一章…' : op === 'previous' ? '正在读取上一章…' :
+    '正在连接' + novelSourceLabel(m) + '标签页…';
   const requestedURL = m.url;
-  const result = await novelBridgeRequest(op, m);
+  const request = {};
+  novelReaderRequest = request;
+  let progress = null;
+  let timer = null;
+  if (panel.classList.contains('collapsed') && panel.classList.contains('dialogue-on')) {
+    progress = document.createElement('div'); progress.className = 'novel-reader-progress';
+    const progressLabel = document.createElement('div'); progressLabel.className = 'ai-label'; progressLabel.textContent = m.name;
+    const heading = document.createElement('div'); heading.className = 'novel-reader-progress-heading';
+    const spinner = document.createElement('span'); spinner.className = 'novel-reader-spinner';
+    const thinking = document.createElement('span'); thinking.className = 'thinking-text'; thinking.textContent = '思考中';
+    const elapsed = document.createElement('span'); elapsed.className = 'thinking-sec';
+    elapsed.textContent = '1s';
+    const started = Date.now();
+    timer = setInterval(() => { elapsed.textContent = Math.max(1, Math.round((Date.now() - started) / 1000)) + 's'; }, 400);
+    heading.append(spinner, thinking, elapsed);
+    const hint = document.createElement('div'); hint.className = 'novel-reader-progress-hint';
+    hint.textContent = op === 'next' ? '正在读取下一章，请稍候…' : op === 'previous' ? '正在读取上一章，请稍候…' : '正在读取当前章节，请稍候…';
+    progress.append(progressLabel, heading, hint);
+    $('#messages').appendChild(progress);
+    scrollFollow();
+  }
+  let result;
+  try { result = await novelBridgeRequest(op, m); }
+  finally { if (timer) clearInterval(timer); progress?.remove(); if (novelReaderRequest === request) novelReaderRequest = null; }
   if (state.cur !== 'novel:' + m.id || novelModels.find(model => model.id === m.id)?.url !== requestedURL) return;
-  if (result?.error) { status.textContent = result.error; return; }
-  if (result?.opened) { status.textContent = result.message; return; }
+  if (result?.error) { status.textContent = result.error; toast(result.error); return; }
+  if (result?.opened) { status.textContent = result.message; toast(result.message); return; }
   if (typeof result?.text !== 'string' || result.text.length < 100) {
-    status.textContent = novelSourceLabel(m) + '标签页没有可显示的完整章节'; return;
+    status.textContent = novelSourceLabel(m) + '标签页没有可显示的完整章节'; toast(status.textContent); return;
+  }
+  if ((op === 'next' || op === 'previous') && novelChapters[m.id]?.url === result.url && novelChapters[m.id]?.text === result.text) {
+    status.textContent = '来源页面仍是当前章节，请检查来源标签页'; toast(status.textContent); return;
   }
   novelReaderRender(m, result, true);
 }
@@ -373,10 +405,18 @@ function novelReaderRender(m, chapter, save) {
   content.style.fontFamily = family || '';
   content.scrollTop = 0;
   panel.dataset.chapterReady = '1';
-  if (novelChapters[m.id]?.url !== chapter.url || novelChapters[m.id]?.text !== chapter.text) {
+  const changedChapter = !!novelChapters[m.id]?.text &&
+    (novelChapters[m.id].url !== chapter.url || novelChapters[m.id].text !== chapter.text);
+  if (changedChapter) {
     novelDialogueGeneration++;
     novelDialogueBusy = false;
     hideTyping();
+    const box = $('#messages');
+    box.querySelectorAll('.novel-ai').forEach(row => row.remove());
+    novelHistory[m.id] = (novelHistory[m.id] || []).filter(item => item.own);
+    box.querySelectorAll('.time-divider').forEach(divider => {
+      if (!divider.nextElementSibling || divider.nextElementSibling.classList.contains('time-divider')) divider.remove();
+    });
   }
   if (save) {
     const prior = novelChapters[m.id];
