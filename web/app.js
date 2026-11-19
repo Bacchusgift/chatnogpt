@@ -288,7 +288,12 @@ function bindFlashlight(row) {
   };
   row.addEventListener('pointermove', e => {
     track(e);
-    if (state.coverMode) row.classList.add('reveal-active');
+    if (state.coverMode && !row.classList.contains('reveal-active')) {
+      const sc = document.querySelector('#msgScroll');
+      const top = sc.scrollTop;
+      row.classList.add('reveal-active');
+      if (sc.scrollTop !== top) sc.scrollTop = top; // 遮罩切换不改变视图位置
+    }
   });
   row.addEventListener('pointerleave', () => row.classList.remove('reveal-active'));
   row.addEventListener('pointerdown', e => {

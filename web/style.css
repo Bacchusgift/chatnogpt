@@ -112,7 +112,8 @@ input, textarea { font: inherit; color: inherit; }
 .mobile-only { display: none; }
 
 /* messages */
-.msg-scroll { flex: 1; overflow-y: auto; }
+.msg-scroll { flex: 1; overflow-y: auto; 
+  overflow-anchor: none; /* 悬停遮罩切换时禁止浏览器滚动锚定自行调整位置 */}
 .msg-col { max-width: 768px; margin: 0 auto; padding: 28px 20px 10px; }
 .time-divider {
   text-align: center; font-size: 12px; color: #8e8e8e;
