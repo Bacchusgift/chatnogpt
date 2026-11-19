@@ -515,45 +515,182 @@ async function loadConvs(silent = false) {
   } catch (e) { if (!silent) toast(e.message); }
 }
 
-let searchHits = null;
+// ---------- 消息搜索：⌘P / Ctrl+P 命令面板 ----------
 
-async function runMessageSearch() {
-  const q = $('#msgSearch').value.trim();
-  if (!q) { searchHits = null; renderConvList(); return; }
+let searchUI = null;
+let searchDebounce = 0;
+let searchSeq = 0;
+let searchHits = [];
+let searchActive = 0;
+let searchQuery = '';
+
+function magnifierSVG(size) {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('width', size); s.setAttribute('height', size); s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none');
+  const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  c.setAttribute('cx', '11'); c.setAttribute('cy', '11'); c.setAttribute('r', '7');
+  c.setAttribute('stroke', 'currentColor'); c.setAttribute('stroke-width', '2');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', 'M20 20l-4-4'); p.setAttribute('stroke', 'currentColor');
+  p.setAttribute('stroke-width', '2'); p.setAttribute('stroke-linecap', 'round');
+  s.append(c, p);
+  return s;
+}
+
+function openSearch() {
+  if (searchUI) { closeSearch(); return; }
+  const root = $('#modalRoot');
+  const overlay = document.createElement('div');
+  overlay.className = 'search-overlay';
+  const panel = document.createElement('div');
+  panel.className = 'search-modal';
+  const box = document.createElement('div');
+  box.className = 'search-box';
+  box.append(magnifierSVG(17));
+  const input = document.createElement('input');
+  input.id = 'searchInput';
+  input.placeholder = '搜索消息…';
+  input.autocomplete = 'off'; input.spellcheck = false;
+  const esc = document.createElement('kbd'); esc.textContent = 'Esc';
+  box.append(input, esc);
+  const results = document.createElement('div');
+  results.className = 'search-results';
+  const foot = document.createElement('div');
+  foot.className = 'search-foot';
+  foot.textContent = '↑↓ 选择 · Enter 打开 · Esc 关闭';
+  panel.append(box, results, foot);
+  overlay.appendChild(panel);
+  root.appendChild(overlay);
+  searchUI = { overlay, panel, input, results, foot };
+  overlay.onclick = e => { if (e.target === overlay) closeSearch(); };
+  input.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => doSearch(input.value.trim()), 220);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); moveSearchSel(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveSearchSel(-1); }
+    else if (e.key === 'Enter') { e.preventDefault(); openSearchHit(searchActive); }
+  });
+  input.focus();
+}
+
+function closeSearch() {
+  searchUI?.overlay.remove();
+  searchUI = null; searchHits = []; searchActive = 0; searchQuery = '';
+}
+
+function moveSearchSel(delta) {
+  if (!searchUI || !searchHits.length) return;
+  searchActive = (searchActive + delta + searchHits.length) % searchHits.length;
+  paintSearchHits();
+}
+
+async function doSearch(q) {
+  const my = ++searchSeq;
+  searchQuery = q;
+  if (!searchUI) return;
+  if (!q) { searchHits = []; searchActive = 0; paintSearchEmpty('输入关键词搜索历史消息'); return; }
+  searchUI.foot.textContent = '搜索中…';
   try {
     const d = await api('/api/search?q=' + encodeURIComponent(q));
+    if (my !== searchSeq || !searchUI) return;
     searchHits = d.hits || [];
-    renderConvList();
-  } catch (e) { toast(e.message); }
+    searchActive = 0;
+    if (!searchHits.length) paintSearchEmpty('没有找到包含“' + q + '”的消息');
+    else paintSearchHits();
+  } catch (e) {
+    if (my !== searchSeq || !searchUI) return;
+    searchUI.foot.textContent = '搜索需要连接数据库后使用';
+  }
+}
+
+function paintSearchEmpty(text) {
+  if (!searchUI) return;
+  searchUI.results.innerHTML = '';
+  const p = document.createElement('div');
+  p.className = 'search-empty';
+  p.textContent = text;
+  searchUI.results.appendChild(p);
+}
+
+function paintSearchHits() {
+  if (!searchUI) return;
+  const list = searchUI.results;
+  list.innerHTML = '';
+  searchHits.forEach((hit, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'search-hit' + (i === searchActive ? ' active' : '');
+    const title = document.createElement('div');
+    title.className = 'h-title';
+    title.textContent = hit.title + ' · ' + fullStamp(hit.message.ts);
+    const snippet = document.createElement('div');
+    snippet.className = 'h-snippet';
+    snippet.append(searchSnippet(hit.message.content || '', searchQuery));
+    b.append(title, snippet);
+    b.onclick = () => openSearchHit(i);
+    b.onmouseenter = () => { searchActive = i; paintSearchActive(); };
+    list.appendChild(b);
+  });
+  paintSearchActive();
+}
+
+function paintSearchActive() {
+  if (!searchUI) return;
+  [...searchUI.results.querySelectorAll('.search-hit')].forEach((el, i) => el.classList.toggle('active', i === searchActive));
+  searchUI.results.querySelector('.search-hit.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+// 生成带关键词高亮的片段（纯 textContent/mark 节点，无注入风险）
+function searchSnippet(content, q) {
+  const frag = document.createDocumentFragment();
+  const lower = content.toLowerCase(), ql = q.toLowerCase();
+  const at = lower.indexOf(ql);
+  if (at < 0) { frag.append(content.slice(0, 80)); return frag; }
+  let start = Math.max(0, at - 24);
+  const end = Math.min(content.length, at + q.length + 48);
+  if (start > 0) frag.append('…');
+  frag.append(content.slice(start, at));
+  const mark = document.createElement('mark');
+  mark.textContent = content.slice(at, at + q.length);
+  frag.append(mark);
+  frag.append(content.slice(at + q.length, end));
+  if (end < content.length) frag.append('…');
+  return frag;
+}
+
+function openSearchHit(i) {
+  const hit = searchHits[i];
+  if (!hit) return;
+  closeSearch();
+  (async () => {
+    if (state.cur !== hit.conv_id) await selectConv(hit.conv_id);
+    timeScrollToMessage(hit.message.id);
+  })();
+}
+
+// 跳到指定消息：居中滚动 + 短暂高亮
+function timeScrollToMessage(mid) {
+  if (!mid) return;
+  let tries = 0;
+  const timer = setInterval(() => {
+    const el = document.querySelector('#messages [data-mid="' + CSS.escape(mid) + '"]');
+    if (el || ++tries > 40) {
+      clearInterval(timer);
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.classList.add('search-flash');
+        setTimeout(() => el.classList.remove('search-flash'), 2200);
+      }
+    }
+  }, 100);
 }
 
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
-  if (searchHits) {
-    const head = document.createElement('div');
-    head.className = 'conv-empty';
-    head.textContent = '搜索结果 ' + searchHits.length + ' 条（清空搜索框返回）';
-    list.appendChild(head);
-    for (const hit of searchHits) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'conv-item search-hit';
-      const t = document.createElement('div');
-      t.textContent = hit.title;
-      const snippet = document.createElement('div');
-      snippet.className = 'search-snippet';
-      const content = hit.message.content || '';
-      const at = content.toLowerCase().indexOf($('#msgSearch').value.trim().toLowerCase());
-      snippet.textContent = at >= 0
-        ? content.slice(Math.max(0, at - 16), at + 44)
-        : content.slice(0, 60);
-      b.append(t, snippet);
-      b.onclick = () => { selectConv(hit.conv_id); closeSidebarMobile(); };
-      list.appendChild(b);
-    }
-    return;
-  }
   if (!state.convs.length && !novelModels.length) {
     const p = document.createElement('div');
     p.className = 'conv-empty';
@@ -904,6 +1041,7 @@ function appendOwn(content, ts, msgId, imageID, localID = '') {
   removeWelcome();
   const wrap = document.createElement('div');
   wrap.className = 'msg-own';
+  if (msgId) wrap.dataset.mid = msgId;
   if (msgId) wrap.dataset.msgId = msgId;
   if (localID) wrap.dataset.localId = localID;
   const realWrap = document.createElement('div');
@@ -1079,6 +1217,7 @@ function addAIActions(row, content) {
 function appendAIStatic(nickname, content, ts, msgId, imageID) {
   if (ts) ensureDivider(ts);
   const r = appendAIRow(nickname);
+  if (msgId) r.row.dataset.mid = msgId;
   const body = document.createElement('div');
   body.className = 'ai-body';
   body.textContent = content;
@@ -1768,7 +1907,6 @@ async function suggestName() {
 
 function bind() {
   const msgScrollEl = $('#msgScroll');
-  const msgSearchInput = $('#msgSearch');
   $('#tabLogin').onclick = () => switchTab(true);
   $('#tabRegister').onclick = () => { switchTab(false); if (!$('#regName').value) suggestName(); };
   $('#btnRerollName').onclick = suggestName;
@@ -1899,11 +2037,17 @@ function bind() {
     if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
   });
 
-  msgSearchInput.addEventListener('input', () => {
-    if (!msgSearchInput.value.trim()) { searchHits = null; renderConvList(); }
-  });
-  msgSearchInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); runMessageSearch(); }
+  $('#btnSearch').onclick = openSearch;
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      openSearch();
+      return;
+    }
+    if (e.key === 'Escape' && searchUI) {
+      e.preventDefault();
+      closeSearch();
+    }
   });
 
   msgScrollEl.addEventListener('scroll', () => {
