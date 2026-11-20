@@ -3,6 +3,7 @@ data/
 
 # 编译产物
 chatnogpt.exe
+chatnogpt-*
 chatnogpt-linux
 *.exe
 *.out
