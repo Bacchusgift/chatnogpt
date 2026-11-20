@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"chatnogpt/plugins/novelreader"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -216,13 +218,42 @@ func openBrowser(url string) {
 
 func buildMux(s *server) http.Handler {
 	mux := http.NewServeMux()
+	s.buildRoutes(mux)
+	return logRequests(mux)
+}
+
+// buildRoutes 把基座与已注册插件的路由挂到 mux 上（测试可直接调用）。
+func (s *server) buildRoutes(mux *http.ServeMux) {
+	// 插件：小说阅读（独立目录 plugins/novelreader，按用户启用）
+	var pluginDB *sql.DB
+	if dbs, ok := s.store.(*dbStore); ok {
+		pluginDB = dbs.DB()
+	}
+	novelPlugin := novelreader.New(novelreader.Config{DB: pluginDB, Dir: s.store.Dir()})
+	mux.HandleFunc("/plugins/novel-reader/novel.js", novelPlugin.FrontendJSHandler)
+	novelPlugin.Register(mux, "/api/plugins/novel-reader", func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			u := s.authUser(r)
+			if u == nil {
+				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+				return
+			}
+			for _, name := range u.DisabledPlugins {
+				if name == novelreader.Name {
+					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在个人设置中开启"))
+					return
+				}
+			}
+			next(w, r.WithContext(novelreader.WithUser(r.Context(), u.ID)))
+		}
+	})
+	mux.HandleFunc("/api/plugins", s.handlePlugins)
+
 	mux.HandleFunc("/api/register", s.handleRegister)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/models", s.handleModels)
-	mux.HandleFunc("/api/custom-models", s.handleCustomModels)
-	mux.HandleFunc("/api/custom-models/", s.handleCustomModelSub)
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
 	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
 	mux.HandleFunc("/api/rooms", s.handleRooms)
@@ -247,7 +278,7 @@ func buildMux(s *server) http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.FileServer(http.FS(fe)).ServeHTTP(w, r)
 	})
-	return logRequests(mux)
+	logRequests(mux)
 }
 
 // serveIndex writes the embedded index.html for SPA client-side routes.

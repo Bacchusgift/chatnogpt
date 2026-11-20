@@ -190,7 +190,7 @@ function purgeLocalArchives() {
   for (const [id, at] of Object.entries(value)) {
     if (Date.now() - Number(at) < 30 * 86400000) continue;
     delete value[id]; changed = true;
-    if (id.startsWith('novel:')) {
+    if (id.startsWith('novel:') && typeof novelSave === 'function') {
       const modelID = id.slice(6);
       delete novelHistory[modelID]; delete novelChapters[modelID]; delete novelHistorySources[modelID];
       novelSave();
@@ -424,7 +424,8 @@ function showApp() {
   }
   if (state.coverMode) ensureCoverPool();
   loadConvs();
-  novelLoad();
+  ensurePluginScript('novel-reader', '/plugins/novel-reader/novel.js?v=1.9.0')
+    .then(() => { if (typeof novelLoad === 'function') novelLoad(); });
   maybeShowNotifBanner();
 }
 
@@ -691,7 +692,7 @@ function timeScrollToMessage(mid) {
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
-  if (!state.convs.length && !novelModels.length) {
+  if (!state.convs.length && pluginNovels().length) {
     const p = document.createElement('div');
     p.className = 'conv-empty';
     p.textContent = '还没有聊天';
@@ -717,7 +718,7 @@ function renderConvList() {
     b.ondblclick = () => renameConv(c.id, c.title);
     appendConversationListItem(list, b, c.id);
   }
-  novelRenderList(list);
+  if (typeof novelRenderList === 'function') novelRenderList(list);
 }
 
 function appendConversationListItem(list, button, id) {
@@ -742,8 +743,8 @@ function appendConversationListItem(list, button, id) {
     } catch (e) { toast(e.message); return; }
     set = archivedConvs();
     if (state.cur === id && set.has(id)) {
-      const next = state.convs.find(c => !set.has(c.id)) || novelModels.find(m => !set.has('novel:' + m.id));
-      if (next) { if (next.url !== undefined) novelSelect(next); else selectConv(next.id); }
+      const next = state.convs.find(c => !set.has(c.id)) || pluginNovels().find(m => !set.has('novel:' + m.id));
+      if (next) { if (typeof novelSelect === 'function') novelSelect(next); else selectConv(next.id); }
       else {
         if (state.ws) { state.ws.close(); state.ws = null; }
         state.cur = null; state.curInfo = null; state.target = null;
@@ -1111,7 +1112,7 @@ async function changeOwnMessage(wrap, recall, content = '') {
   const originalText = wrap.querySelector('.own-original')?.textContent || '';
   try {
     let message;
-    if (wrap.dataset.localId) message = novelUpdateOwnEntry(wrap.dataset.localId, recall, content);
+    if (wrap.dataset.localId && typeof novelUpdateOwnEntry === 'function') message = novelUpdateOwnEntry(wrap.dataset.localId, recall, content);
     else {
       const id = wrap.dataset.msgId;
       const d = await api(`/api/conversations/${state.cur}/messages/${id}`, recall ? { method: 'DELETE' } : { method: 'PATCH', body: { content } });
@@ -1235,6 +1236,26 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
     bindFlashlight(r.row);
   }
   addAIActions(r.row, content);
+}
+
+// pluginNovels 读取阅读插件模型列表（插件未加载时返回空数组）。
+function pluginNovels() {
+  return typeof novelModels === 'undefined' ? [] : (novelModels || []);
+}
+
+// 插件脚本动态加载：按 /api/me 返回的启用插件注入
+let loadedPluginScripts = {};
+function ensurePluginScript(name, src) {
+  if ((state.enabledPlugins || []).indexOf(name) === -1) return Promise.resolve();
+  if (loadedPluginScripts[name]) return Promise.resolve();
+  loadedPluginScripts[name] = new Promise(resolve => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = resolve;
+    document.head.appendChild(s);
+  });
+  return loadedPluginScripts[name];
 }
 
 // 历史消息懒加载：滚动到顶部时按游标拉更早的 100 条，前插并保持滚动位置
@@ -1602,7 +1623,7 @@ async function openModelMenu() {
     const d = await api('/api/models');
     const models = d.models || [];
     modelMenu.innerHTML = '';
-    if (!models.length && !novelModels.length) {
+    if (!models.length && pluginNovels().length) {
       const p = document.createElement('div');
       p.className = 'conv-empty';
       p.textContent = '暂时没有其他模型';
@@ -1831,6 +1852,7 @@ async function send() {
       if (state.cur !== initialConv || state.target?.id !== targetID) {
         throw new Error('发送期间切换了会话，请重新发送');
       }
+      if (typeof novelSend !== 'function') { toast('阅读插件未加载'); return; }
       await novelSend(text, imageID);
       if (attachment === state.attachment) removeAttachment();
     } catch (e) { toast(e.message); }
@@ -1921,6 +1943,7 @@ function bind() {
       state.token = d.token;
       localStorage.setItem('cngp_token', d.token);
       state.me = d.user;
+      state.enabledPlugins = d.plugins || [];
       askNotifyPermission();
       showApp();
     } catch (err) { $('#loginError').textContent = err.message; }
@@ -1939,6 +1962,7 @@ function bind() {
       state.token = d.token;
       localStorage.setItem('cngp_token', d.token);
       state.me = d.user;
+      state.enabledPlugins = d.plugins || [];
       askNotifyPermission();
       showApp();
     } catch (err) { $('#regError').textContent = err.message; }
@@ -1950,7 +1974,7 @@ function bind() {
     doLogoutLocal();
   };
 
-  $('#btnSettings').onclick = () => {
+  $('#btnSettings').onclick = async () => {
     const root = $('#modalRoot'); root.replaceChildren();
     const overlay = document.createElement('div'); overlay.className = 'overlay';
     const panel = document.createElement('div'); panel.className = 'modal';
@@ -1973,7 +1997,7 @@ function bind() {
     const archiveList = document.createElement('div'); archiveList.className = 'settings-archive-list';
     const archived = state.convs.filter(c => c.archived_at).map(c => ({ id: c.id, title: c.title, at: c.archived_at * 1000 }));
     for (const [id, at] of Object.entries(localArchives())) {
-      if (id.startsWith('novel:')) archived.push({ id, title: novelModels.find(m => m.id === id.slice(6))?.name || '阅读会话', at: Number(at) });
+      if (id.startsWith('novel:') && typeof novelModels !== 'undefined') archived.push({ id, title: novelModels.find(m => m.id === id.slice(6))?.name || '阅读会话', at: Number(at) });
     }
     for (const item of archived) {
       const row = document.createElement('div'); row.className = 'settings-archive-row';
@@ -1990,7 +2014,31 @@ function bind() {
       row.append(left, restore); archiveList.appendChild(row);
     }
     if (!archived.length) archiveList.textContent = '暂无归档聊天';
-    panel.append(title, toggle, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
+    // 插件开关：基座可感知的插件目录，按用户启停
+    const plugTitle = document.createElement('h4'); plugTitle.textContent = '插件';
+    const plugList = document.createElement('div'); plugList.className = 'settings-archive-list';
+    if (true) {
+      try {
+        const d = await api('/api/plugins');
+        for (const p of d.plugins || []) {
+          const row = document.createElement('div'); row.className = 'settings-archive-row';
+          const label = document.createElement('span');
+          label.textContent = p.title + (p.desc ? ' · ' + p.desc : '');
+          const sw = document.createElement('button'); sw.type = 'button'; sw.textContent = p.enabled ? '已启用' : '已停用';
+          sw.onclick = async () => {
+            try {
+              await api('/api/plugins', { body: { action: p.enabled ? 'disable' : 'enable', name: p.name } });
+              sw.textContent = p.enabled ? '已停用' : '已启用';
+              toast(p.title + (p.enabled ? ' 已停用，刷新页面生效' : ' 已启用'));
+            } catch (e) { toast(e.message); }
+          };
+          row.append(label, sw); plugList.appendChild(row);
+        }
+      } catch (e) { const hintP = document.createElement('p'); hintP.className = 'settings-hint'; hintP.textContent = '插件列表需要登录后查看'; plugList.appendChild(hintP); }
+    } else {
+      const none = document.createElement('p'); none.className = 'settings-hint'; none.textContent = '暂无可管理插件'; plugList.appendChild(none);
+    }
+    panel.append(title, toggle, plugTitle, plugList, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
     overlay.onclick = e => { if (e.target === overlay) root.replaceChildren(); };
   };
 
@@ -2110,6 +2158,7 @@ async function init() {
   try {
     const d = await api('/api/me');
     state.me = d.user;
+    state.enabledPlugins = d.plugins || [];
     showApp();
   } catch (e) { toast(e.message); }
 }

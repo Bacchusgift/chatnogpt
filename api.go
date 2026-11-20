@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+
+	"chatnogpt/plugins/novelreader"
 	"io"
 	"net/http"
 	"strconv"
@@ -120,7 +122,20 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": publicUserOf(u)})
+	enabled := make([]string, 0, len(pluginCatalog))
+	for _, p := range pluginCatalog {
+		disabled := false
+		for _, name := range u.DisabledPlugins {
+			if name == p.Name {
+				disabled = true
+				break
+			}
+		}
+		if !disabled {
+			enabled = append(enabled, p.Name)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": publicUserOf(u), "plugins": enabled})
 }
 
 func (s *server) handleConversations(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +314,72 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
+}
+
+// pluginCatalog 基座可感知的插件目录（与 plugins/ 目录一一对应）。
+var pluginCatalog = []struct{ Name, Title, Desc string }{
+	{novelreader.Name, novelreader.Title, novelreader.Desc},
+}
+
+func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			Action string `json:"action"`
+			Name   string `json:"name"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.Action != "enable" && req.Action != "disable" {
+			writeErr(w, http.StatusBadRequest, errors.New("action 需为 enable 或 disable"))
+			return
+		}
+		known := false
+		for _, p := range pluginCatalog {
+			if p.Name == req.Name {
+				known = true
+				break
+			}
+		}
+		if !known {
+			http.NotFound(w, r)
+			return
+		}
+		s.togglePlugin(w, r, req.Name, req.Action == "disable")
+		return
+	}
+	disabled := map[string]bool{}
+	for _, name := range u.DisabledPlugins {
+		disabled[name] = true
+	}
+	out := []map[string]any{}
+	for _, p := range pluginCatalog {
+		out = append(out, map[string]any{
+			"name": p.Name, "title": p.Title, "desc": p.Desc,
+			"enabled": !disabled[p.Name],
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plugins": out})
+}
+
+// togglePlugin 启用/停用插件（个人设置）。
+func (s *server) togglePlugin(w http.ResponseWriter, r *http.Request, name string, disabled bool) {
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	if err := s.store.SetPluginDisabled(u.ID, name, disabled); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": name, "enabled": !disabled})
 }
 
 func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {

@@ -29,7 +29,7 @@ window.addEventListener('message', event => {
 
 async function novelLoad() {
   try {
-    const d = await api('/api/custom-models');
+    const d = await api('/api/plugins/novel-reader/models');
     novelModels = d.models || [];
     try { novelHistory = JSON.parse(localStorage.getItem('cngp_novel_history_' + state.me.id) || '{}'); } catch { novelHistory = {}; }
     try { novelChapters = JSON.parse(localStorage.getItem('cngp_novel_chapters_' + state.me.id) || '{}'); } catch { novelChapters = {}; }
@@ -602,7 +602,7 @@ async function novelSend(text, imageID = '') {
     return;
   }
   try {
-    const d = await api('/api/custom-models/' + m.id + '/next', { method: 'POST', body: {} });
+    const d = await api('/api/plugins/novel-reader/' + m.id + '/next', { method: 'POST', body: {} });
     const replyTS = Math.floor(Date.now() / 1000);
     novelReply(m, d.content || '已读完', replyTS);
     novelRemember(m, { text: d.content || '已读完', ts: replyTS });
@@ -623,7 +623,7 @@ async function novelUploadTXT(m) {
       const selected = file.files[0]; if (!selected) return;
       if (selected.size > 2 * 1024 * 1024) throw new Error('TXT 文件不能超过 2 MB');
       const text = await selected.text();
-      await api('/api/custom-models/' + m.id + '/text', { method: 'PUT', body: { text } });
+      await api('/api/plugins/novel-reader/' + m.id + '/text', { method: 'PUT', body: { text } });
       toast('TXT 已上传，发送“继续”阅读');
     } catch (e) { toast(e.message); }
     finally { file.remove(); }
@@ -670,7 +670,7 @@ function novelEditURLModal(m) {
     if (nextURL === (m.url || '')) { root.innerHTML = ''; return; }
     save.disabled = true;
     try {
-      await api('/api/custom-models/' + encodeURIComponent(m.id) + '/url', {
+      await api('/api/plugins/novel-reader/' + encodeURIComponent(m.id) + '/url', {
         method: 'PUT', body: { url: nextURL },
       });
       m.url = nextURL;
@@ -704,7 +704,7 @@ function novelCreateModal() {
   form.onsubmit = async e => {
     e.preventDefault(); save.disabled = true;
     try {
-      const d = await api('/api/custom-models', { body: { name: name.value.trim(), url: url.value.trim() } });
+      const d = await api('/api/plugins/novel-reader/models', { body: { name: name.value.trim(), url: url.value.trim() } });
       root.innerHTML = ''; await novelLoad();
       novelSelect(novelModels.find(m => m.id === d.model.id) || d.model);
     } catch (err) { toast(err.message); save.disabled = false; }

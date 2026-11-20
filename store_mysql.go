@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -117,6 +118,10 @@ func newDBStore(dsn, dir string) (*dbStore, error) {
 	if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN unread_count INT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
 		db.Close()
 		return nil, fmt.Errorf("初始化未读计数: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE users ADD COLUMN disabled_plugins TEXT NULL"); err != nil && sqlErrCode(err) != 1060 {
+		db.Close()
+		return nil, fmt.Errorf("初始化插件开关: %w", err)
 	}
 	for _, column := range []string{"archived_at", "deleted_at"} {
 		if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN " + column + " BIGINT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
@@ -306,9 +311,10 @@ func (s *dbStore) Register(name, password string) (*User, string, error) {
 func (s *dbStore) Login(name, password string) (*User, string, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	var u User
-	row := s.db.QueryRow(`SELECT id, username, nickname, salt, hash, created_at FROM users
+	var disabled sql.NullString
+	row := s.db.QueryRow(`SELECT id, username, nickname, salt, hash, created_at, COALESCE(disabled_plugins,'') FROM users
 		WHERE nickname_lc=? OR username_lc=? LIMIT 1`, key, key)
-	if err := row.Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt, &disabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrBadAccount
 		}
@@ -317,6 +323,7 @@ func (s *dbStore) Login(name, password string) (*User, string, error) {
 	if !verifyPassword(password, u.Salt, u.Hash) {
 		return nil, "", ErrBadAccount
 	}
+	u.DisabledPlugins = decodeDisabled(disabled)
 	token, err := s.insertToken(u.ID)
 	if err != nil {
 		return nil, "", err
@@ -326,12 +333,14 @@ func (s *dbStore) Login(name, password string) (*User, string, error) {
 
 func (s *dbStore) UserByToken(token string) *User {
 	var u User
-	err := s.db.QueryRow(`SELECT u.id, u.username, u.nickname, u.salt, u.hash, u.created_at
+	var disabled sql.NullString
+	err := s.db.QueryRow(`SELECT u.id, u.username, u.nickname, u.salt, u.hash, u.created_at, COALESCE(u.disabled_plugins,'')
 		FROM tokens t JOIN users u ON u.id=t.user_id WHERE t.token=?`, token).
-		Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt)
+		Scan(&u.ID, &u.Username, &u.Nickname, &u.Salt, &u.Hash, &u.CreatedAt, &disabled)
 	if err != nil {
 		return nil
 	}
+	u.DisabledPlugins = decodeDisabled(disabled)
 	return &u
 }
 
@@ -876,87 +885,6 @@ func (s *dbStore) RoomMembers(convID, userID string) ([]string, error) {
 // ---- custom reading models ----
 
 // CreateCustomModel registers a private reading model for the owner.
-func (s *dbStore) CreateCustomModel(ownerID, name, url string) (CustomModel, error) {
-	m := CustomModel{ID: newID(), OwnerID: ownerID, Name: name, URL: url, CreatedAt: now()}
-	_, err := s.db.Exec(`INSERT INTO custom_models (id, owner_id, name, url, created_at) VALUES (?,?,?,?,?)`,
-		m.ID, m.OwnerID, m.Name, m.URL, m.CreatedAt)
-	return m, err
-}
-
-// ListCustomModels returns the owner's models without chapter text bodies.
-func (s *dbStore) ListCustomModels(ownerID string) ([]CustomModel, error) {
-	rows, err := s.db.Query(`SELECT id, owner_id, name, url, position, chapter_id, chapter_offset, created_at
-		FROM custom_models WHERE owner_id=? ORDER BY created_at`, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []CustomModel{}
-	for rows.Next() {
-		var m CustomModel
-		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.URL, &m.Position, &m.ChapterID, &m.ChapterOffset, &m.CreatedAt); err != nil {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out, nil
-}
-
-// GetCustomModel returns one owner-owned model, including the TXT body.
-func (s *dbStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error) {
-	var m CustomModel
-	var text sql.NullString
-	err := s.db.QueryRow(`SELECT id, owner_id, name, url, COALESCE(text,''), position, chapter_id, chapter_offset, created_at
-		FROM custom_models WHERE id=? AND owner_id=?`,
-		modelID, ownerID).Scan(&m.ID, &m.OwnerID, &m.Name, &m.URL, &text, &m.Position, &m.ChapterID, &m.ChapterOffset, &m.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	m.Text = text.String
-	return &m, nil
-}
-
-func (s *dbStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
-	m, err := s.GetCustomModel(modelID, ownerID)
-	if err != nil {
-		return err
-	}
-	if m.URL == modelURL {
-		return nil
-	}
-	_, err = s.db.Exec(`UPDATE custom_models SET url=?, position=0, chapter_id='', chapter_offset=0
-		WHERE id=? AND owner_id=?`, modelURL, modelID, ownerID)
-	return err
-}
-
-// SaveCustomModelText stores a fresh TXT body and rewinds the position.
-func (s *dbStore) SaveCustomModelText(modelID, ownerID, text string) error {
-	res, err := s.db.Exec(`UPDATE custom_models SET text=?, position=0 WHERE id=? AND owner_id=?`,
-		text, modelID, ownerID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// SaveCustomModelPosition advances the TXT reading position.
-func (s *dbStore) SaveCustomModelPosition(modelID, ownerID string, position int64) error {
-	_, err := s.db.Exec("UPDATE custom_models SET position=? WHERE id=? AND owner_id=?", position, modelID, ownerID)
-	return err
-}
-
-// SaveCustomModelProgress stores the remote chapter position.
-func (s *dbStore) SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error {
-	_, err := s.db.Exec("UPDATE custom_models SET chapter_id=?, chapter_offset=? WHERE id=? AND owner_id=?",
-		chapterID, offset, modelID, ownerID)
-	return err
-}
 
 // SearchMessages finds messages containing the query across every
 // conversation the user belongs to (database-only capability).
@@ -983,4 +911,49 @@ func (s *dbStore) SearchMessages(userID, query string, limit int) ([]SearchHit, 
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// decodeDisabled 解析 users.disabled_plugins（JSON 数组文本）。
+func decodeDisabled(s sql.NullString) []string {
+	if !s.Valid || strings.TrimSpace(s.String) == "" {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(s.String), &list); err != nil {
+		return nil
+	}
+	return list
+}
+
+// SetPluginDisabled 按用户记录插件停用集合（JSON 文本存于 users 行）。
+func (s *dbStore) SetPluginDisabled(userID, plugin string, disabled bool) error {
+	var cur sql.NullString
+	if err := s.db.QueryRow("SELECT COALESCE(disabled_plugins,'') FROM users WHERE id=?", userID).Scan(&cur); err != nil {
+		return err
+	}
+	list := decodeDisabled(cur)
+	contains := false
+	out := make([]string, 0, len(list)+1)
+	for _, name := range list {
+		if name == plugin {
+			contains = true
+			if !disabled {
+				continue
+			}
+		}
+		out = append(out, name)
+	}
+	if disabled && !contains {
+		out = append(out, plugin)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	payload := string(b)
+	if len(out) == 0 {
+		payload = ""
+	}
+	_, err = s.db.Exec("UPDATE users SET disabled_plugins=? WHERE id=?", payload, userID)
+	return err
 }

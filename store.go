@@ -26,6 +26,8 @@ type User struct {
 	Salt      string `json:"salt"`
 	Hash      string `json:"hash"`
 	CreatedAt int64  `json:"created_at"`
+	// DisabledPlugins 该用户停用的插件名（JSON 存于 users.disabled_plugins）
+	DisabledPlugins []string `json:"disabled_plugins,omitempty"`
 }
 
 type Member struct {
@@ -158,13 +160,7 @@ type Store interface {
 	HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error)
 	CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error)
 	RoomMembers(convID, userID string) ([]string, error)
-	CreateCustomModel(ownerID, name, url string) (CustomModel, error)
-	ListCustomModels(ownerID string) ([]CustomModel, error)
-	GetCustomModel(modelID, ownerID string) (*CustomModel, error)
-	SaveCustomModelURL(modelID, ownerID, modelURL string) error
-	SaveCustomModelText(modelID, ownerID, text string) error
-	SaveCustomModelPosition(modelID, ownerID string, position int64) error
-	SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error
+	SetPluginDisabled(userID, plugin string, disabled bool) error
 	SearchMessages(userID, query string, limit int) ([]SearchHit, error)
 	Fresh() error
 	Close() error

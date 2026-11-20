@@ -800,100 +800,35 @@ func (s *fileStore) RoomMembers(convID, userID string) ([]string, error) {
 
 // ---- custom reading models ----
 
-func (s *fileStore) CreateCustomModel(ownerID, name, url string) (CustomModel, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := CustomModel{ID: newID(), OwnerID: ownerID, Name: name, URL: url, CreatedAt: now()}
-	s.d.CustomModels[m.ID] = &m
-	s.saveLocked()
-	return m, nil
-}
-
-func (s *fileStore) ListCustomModels(ownerID string) ([]CustomModel, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := []CustomModel{}
-	for _, m := range s.d.CustomModels {
-		if m.OwnerID != ownerID {
-			continue
-		}
-		copyM := *m
-		copyM.Text = ""
-		out = append(out, copyM)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
-	return out, nil
-}
-
-func (s *fileStore) GetCustomModel(modelID, ownerID string) (*CustomModel, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := s.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		return nil, ErrNotFound
-	}
-	copyM := *m
-	return &copyM, nil
-}
-
-func (s *fileStore) SaveCustomModelURL(modelID, ownerID, modelURL string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := s.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		return ErrNotFound
-	}
-	if m.URL == modelURL {
-		return nil
-	}
-	m.URL = modelURL
-	m.Position = 0
-	m.ChapterID = ""
-	m.ChapterOffset = 0
-	s.saveLocked()
-	return nil
-}
-
-func (s *fileStore) SaveCustomModelText(modelID, ownerID, text string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := s.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		return ErrNotFound
-	}
-	m.Text = text
-	m.Position = 0
-	s.saveLocked()
-	return nil
-}
-
-func (s *fileStore) SaveCustomModelPosition(modelID, ownerID string, position int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := s.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		return ErrNotFound
-	}
-	m.Position = position
-	s.saveLocked()
-	return nil
-}
-
-func (s *fileStore) SaveCustomModelProgress(modelID, ownerID, chapterID string, offset int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m := s.d.CustomModels[modelID]
-	if m == nil || m.OwnerID != ownerID {
-		return ErrNotFound
-	}
-	m.ChapterID = chapterID
-	m.ChapterOffset = offset
-	s.saveLocked()
-	return nil
-}
-
 // ---- search (database-only capability) ----
 
 func (s *fileStore) SearchMessages(userID, query string, limit int) ([]SearchHit, error) {
 	return nil, ErrNoDatabase
+}
+
+// SetPluginDisabled 按用户记录插件停用集合。
+func (s *fileStore) SetPluginDisabled(userID, plugin string, disabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.d.Users[userID]
+	if u == nil {
+		return ErrUserNotFound
+	}
+	contains := false
+	out := make([]string, 0, len(u.DisabledPlugins)+1)
+	for _, name := range u.DisabledPlugins {
+		if name == plugin {
+			contains = true
+			if !disabled {
+				continue
+			}
+		}
+		out = append(out, name)
+	}
+	if disabled && !contains {
+		out = append(out, plugin)
+	}
+	u.DisabledPlugins = out
+	s.saveLocked()
+	return nil
 }
