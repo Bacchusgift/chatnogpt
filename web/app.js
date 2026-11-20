@@ -1432,6 +1432,18 @@ function pluginNovels() {
 }
 
 // ===== 插件管理页：侧栏「插件」入口，右侧整页设置 =====
+// PWA：Service Worker 注册 + 桌面安装流程（beforeinstallprompt 捕获后供个人设置使用）
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+});
+
 const PLUGIN_SCRIPTS = {
   'novel-reader': '/plugins/novel-reader/novel.js?v=1.9.0',
   'turtle-soup': '/plugins/turtle-soup/soup.js?v=2.1.0',
@@ -2310,6 +2322,28 @@ function bind() {
       render();
     };
     render();
+    // 安装到桌面：PWA 安装（Chromium 触发原生弹窗；iOS 提示手动添加）
+    const installRow = document.createElement('button'); installRow.type = 'button'; installRow.className = 'model-item';
+    const renderInstall = () => {
+      const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+      if (standalone) { installRow.textContent = '已安装为桌面应用'; installRow.disabled = true; return; }
+      if (deferredInstallPrompt) { installRow.textContent = '安装到桌面（PWA 应用）'; installRow.disabled = false; return; }
+      const ua = navigator.userAgent || '';
+      installRow.disabled = true;
+      installRow.textContent = /iPhone|iPad/.test(ua) ? 'iOS 安装：Safari 分享 → 添加到主屏幕' : '安装入口将在浏览器给出安装提示后可用';
+    };
+    renderInstall();
+    installRow.onclick = async () => {
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      try {
+        const choice = await deferredInstallPrompt.userChoice;
+        if (choice && choice.outcome === 'accepted') toast('已安装到桌面');
+      } catch (e) { }
+      deferredInstallPrompt = null;
+      renderInstall();
+    };
+    window.addEventListener('beforeinstallprompt', renderInstall);
     const done = document.createElement('button'); done.type = 'button'; done.className = 'btn-primary'; done.textContent = '完成';
     done.onclick = () => root.replaceChildren();
     const archiveTitle = document.createElement('h4'); archiveTitle.textContent = '已归档聊天';
@@ -2335,7 +2369,7 @@ function bind() {
       row.append(left, restore); archiveList.appendChild(row);
     }
     if (!archived.length) archiveList.textContent = '暂无归档聊天';
-    panel.append(title, toggle, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
+    panel.append(title, toggle, installRow, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
     overlay.onclick = e => { if (e.target === overlay) root.replaceChildren(); };
   };
 
