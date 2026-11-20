@@ -172,6 +172,29 @@ func (s *fileStore) CreateUser(username, nickname, password string) (*User, stri
 }
 
 // SearchUsers 按昵称/用户名模糊搜索成员（排除调用者），供群聊邀请选择。
+// SetConvDeleted 软删除/恢复会话（仅影响调用者自己的成员行，对端不受影响）。
+func (s *fileStore) SetConvDeleted(convID, userID string, deleted bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.d.Convs[convID]
+	if c == nil {
+		return ErrNotFound
+	}
+	m, exists := c.Members[userID]
+	if !exists {
+		return ErrNotFound
+	}
+	if deleted {
+		m.DeletedAt = now()
+	} else {
+		m.DeletedAt = 0
+	}
+	m.ArchivedAt = 0
+	m.UnreadCount = 0
+	s.saveLocked()
+	return nil
+}
+
 func (s *fileStore) SearchUsers(q, excludeUserID string) []UserBrief {
 	s.mu.Lock()
 	defer s.mu.Unlock()

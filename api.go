@@ -484,6 +484,14 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if err := s.store.SetConvDeleted(convID, u.ID, true); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
 	if _, err := s.store.GetConv(convID, u.ID); err != nil {
 		writeErr(w, statusOf(err), err)
 		return

@@ -159,6 +159,7 @@ type Store interface {
 	JoinConv(u *User, code, title string) (convBrief, error)
 	ListConvs(userID string) []convSummary
 	SetConvArchived(convID, userID string, archived bool) error
+	SetConvDeleted(convID, userID string, deleted bool) error
 	PurgeExpiredArchives() error
 	MarkConvRead(convID, userID string) error
 	GetConv(convID, userID string) (*Conv, error)

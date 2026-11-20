@@ -496,6 +496,26 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 	return out
 }
 
+// SetConvDeleted 软删除/恢复会话（仅影响调用者自己的成员行，对端不受影响）。
+func (s *dbStore) SetConvDeleted(convID, userID string, deleted bool) error {
+	var one int
+	err := s.db.QueryRow("SELECT 1 FROM conv_members WHERE conv_id=? AND user_id=?",
+		convID, userID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	at := int64(0)
+	if deleted {
+		at = now()
+	}
+	_, err = s.db.Exec("UPDATE conv_members SET deleted_at=?, archived_at=0, unread_count=0 WHERE conv_id=? AND user_id=?",
+		at, convID, userID)
+	return err
+}
+
 func (s *dbStore) PurgeExpiredArchives() error {
 	_, err := s.db.Exec("UPDATE conv_members SET deleted_at=?, archived_at=0, unread_count=0 WHERE deleted_at=0 AND archived_at>0 AND archived_at<=?", now(), now()-archiveRetentionSeconds)
 	return err

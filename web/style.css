@@ -143,9 +143,10 @@ input, textarea { font: inherit; color: inherit; }
 .conv-item { position: relative; padding-right: 48px; }
 .conv-entry { position: relative; }
 .conv-entry .conv-item { padding-right: 52px; }
-.conv-archive { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 5px 6px; color: #999; font-size: 11px; border-radius: 6px; opacity: 0; }
-.conv-entry:hover .conv-archive, .conv-entry:focus-within .conv-archive { opacity: 1; }
-.conv-archive:hover { background: #414141; color: #fff; }
+.conv-more { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding: 4px 8px; color: #999; font-size: 14px; line-height: 1; border-radius: 6px; opacity: 0; }
+.conv-entry:hover .conv-more, .conv-entry:focus-within .conv-more { opacity: 1; }
+.conv-more:hover { background: #414141; color: #fff; }
+@media (hover: none) { .conv-more { opacity: 1; } }
 .archive-toggle { margin: 3px 10px 8px; padding: 5px 8px; color: #999; font-size: 12px; border-radius: 6px; }
 .archive-toggle:hover { color: #ddd; background: #2c2c2c; }
 @media (hover: none) { .conv-archive { opacity: 1; } }
@@ -728,3 +729,18 @@ body.cover-on .msg-real.covered.flash::after {
 .rmodal-primary:disabled { opacity: .55; }
 .rmodal-cancel { width: 100%; padding: 10px 0; border: 0; background: none; color: #9a9a9a; font-size: 14px; border-radius: 10px; }
 .rmodal-cancel:hover { color: #d0d0d0; background: rgba(255,255,255,.06); }
+
+/* ---------- 会话操作菜单 + 删除确认 ---------- */
+.ctx-menu { position: fixed; z-index: 90; min-width: 150px; background: #2f2f2f; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 6px; box-shadow: 0 16px 48px rgba(0,0,0,.5); }
+.ctx-menu button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 10px; border: 0; background: none; color: #dcdcdc; font-size: 13.5px; border-radius: 8px; text-align: left; }
+.ctx-menu button:hover { background: rgba(255,255,255,.08); }
+.ctx-menu button.danger { color: #ff8a8a; }
+.confirm-modal { width: min(400px, calc(100vw - 32px)); }
+.confirm-body { margin: 6px 0 18px; font-size: 13.5px; color: #b8b8b8; line-height: 1.7; }
+.confirm-actions { display: flex; gap: 10px; }
+.confirm-cancel { flex: 1; padding: 10px 0; border: 0; border-radius: 10px; background: rgba(255,255,255,.08); color: #d0d0d0; font-size: 14px; }
+.confirm-cancel:hover { background: rgba(255,255,255,.12); }
+.confirm-ok { flex: 1; padding: 10px 0; border: 0; border-radius: 10px; background: #fff; color: #0d0d0d; font-size: 14px; font-weight: 600; }
+.confirm-ok:hover { background: #e6e6e6; }
+.confirm-ok.danger { background: #e5484d; color: #fff; }
+.confirm-ok.danger:hover { background: #d63e43; }

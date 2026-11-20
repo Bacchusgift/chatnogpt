@@ -693,16 +693,25 @@ function timeScrollToMessage(mid) {
   }, 100);
 }
 
+// 会话行显示名：归属优先——1:1 显示对方昵称，群聊室显示房间名
+function convDisplayName(c) {
+  if (c.kind !== 1 && c.peer_nickname) return c.peer_nickname;
+  return c.title;
+}
+function convTooltip(c) {
+  if (c.kind !== 1 && c.peer_nickname) return '与 ' + c.peer_nickname + ' 的对话';
+  return c.title + '（双击修改标题）';
+}
 function convButton(c) {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
   b.dataset.id = c.id;
-  b.textContent = c.title;
+  b.textContent = convDisplayName(c);
   if (c.unread_count > 0) b.appendChild(unreadBadgeEl(c.unread_count));
-  b.title = c.title + '（双击修改标题）';
+  b.title = convTooltip(c);
   b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
-  b.ondblclick = () => renameConv(c.id, c.title);
+  if (c.kind === 1) b.ondblclick = () => renameConv(c.id, c.title);
   if (c.kind !== 1) {
     b.draggable = true;
     b.addEventListener('dragstart', e => {
@@ -717,10 +726,8 @@ function convButton(c) {
 }
 
 function convEntry(list, c) {
-  const archived = archivedConvs();
   const b = convButton(c);
-  appendConversationListItem(list, b, c.id);
-  void archived;
+  appendConversationListItem(list, b, c);
 }
 
 function sectionHeader(label, extra) {
@@ -759,7 +766,7 @@ function renderConvList() {
     const b = convButton(r);
     b.classList.add('room-item');
     if (r.unread_count > 0) b.appendChild(unreadBadgeEl(r.unread_count));
-    list.appendChild(b);
+    appendConversationListItem(list, b, r);
   } else {
     const empty = document.createElement('div');
     empty.className = 'conv-empty';
@@ -851,40 +858,135 @@ function createProjectModal() {
   field.focus();
 }
 
-function appendConversationListItem(list, button, id) {
+function appendConversationListItem(list, button, c) {
   const wrap = document.createElement('div'); wrap.className = 'conv-entry';
-  const action = document.createElement('button'); action.type = 'button'; action.className = 'conv-archive';
-  const archived = archivedConvs().has(id);
-  action.textContent = archived ? '还原' : '归档';
-  action.title = archived ? '从归档中还原' : '归档并隐藏';
-  action.setAttribute('aria-label', action.title);
-  action.onclick = async () => {
-    let set = archivedConvs();
-    const willArchive = !set.has(id);
-    try {
-      if (id.startsWith('novel:')) {
-        const value = localArchives();
-        if (willArchive) value[id] = Date.now(); else delete value[id];
-        saveLocalArchives(value);
-      } else {
-        await api('/api/conversations/' + encodeURIComponent(id) + '/archive', { method: willArchive ? 'PUT' : 'DELETE' });
-        await loadConvs(true);
-      }
-    } catch (e) { toast(e.message); return; }
-    set = archivedConvs();
-    if (state.cur === id && set.has(id)) {
-      const next = state.convs.find(c => !set.has(c.id)) || pluginNovels().find(m => !set.has('novel:' + m.id));
-      if (next) { if (typeof novelSelect === 'function') novelSelect(next); else selectConv(next.id); }
-      else {
-        if (state.ws) { state.ws.close(); state.ws = null; }
-        state.cur = null; state.curInfo = null; state.target = null;
-        $('#messages').replaceChildren(); appendWelcome('ChatNoGPT'); $('#convTitle').textContent = 'ChatNoGPT';
-        $('#modelBtn').style.display = 'none'; $('#btnRenameConv').classList.add('hidden');
-      }
+  const more = document.createElement('button');
+  more.type = 'button'; more.className = 'conv-more';
+  more.textContent = '⋯';
+  more.title = '会话操作';
+  more.setAttribute('aria-label', '会话操作');
+  more.onclick = e => { e.stopPropagation(); openConvMenu(more, c); };
+  wrap.append(button, more); list.appendChild(wrap);
+}
+
+// 当前会话被归档/删除后，自动切到下一个会话或回到欢迎页
+function resetCurrentIfGone(goneId) {
+  if (state.cur !== goneId) return;
+  const archived = archivedConvs();
+  const next = state.convs.find(cc => !archived.has(cc.id)) || pluginNovels().find(m => !archived.has('novel:' + m.id));
+  if (next) {
+    if (String(next.id).startsWith('novel:') && typeof novelSelect === 'function') novelSelect(next);
+    else selectConv(next.id);
+  } else {
+    if (state.ws) { state.ws.close(); state.ws = null; }
+    state.cur = null; state.curInfo = null; state.target = null;
+    $('#messages').replaceChildren(); appendWelcome('ChatNoGPT'); $('#convTitle').textContent = 'ChatNoGPT';
+    $('#modelBtn').style.display = 'none'; $('#btnRenameConv').classList.add('hidden');
+  }
+}
+
+async function archiveConv(c) {
+  const wasArchived = archivedConvs().has(c.id);
+  try {
+    if (c.id.startsWith('novel:')) {
+      const value = localArchives();
+      if (wasArchived) delete value[c.id]; else value[c.id] = Date.now();
+      saveLocalArchives(value);
+    } else {
+      await api('/api/conversations/' + encodeURIComponent(c.id) + '/archive', { method: wasArchived ? 'DELETE' : 'PUT' });
+      await loadConvs(true);
     }
-    renderConvList();
+  } catch (e) { toast(e.message); return; }
+  if (!wasArchived) resetCurrentIfGone(c.id);
+  renderConvList();
+}
+
+async function deleteConv(c, mode) {
+  const isRoom = c.kind === 1 && !c.id.startsWith('novel:');
+  openConfirm({
+    title: mode === 'leave' ? '退出群聊' : '删除会话',
+    body: isRoom
+      ? '退出「' + convDisplayName(c) + '」后，将不再收到该群消息；需要重新被邀请才能进入。'
+      : '删除「' + convDisplayName(c) + '」只影响你自己的列表，' + (c.peer_nickname ? '与 ' + c.peer_nickname + ' 的记录仍保留在对方那边。' : '对方仍保留对话。') + '确定删除？',
+    okText: mode === 'leave' ? '退出' : '删除',
+    danger: true,
+    onOk: async () => {
+      await api('/api/conversations/' + encodeURIComponent(c.id), { method: 'DELETE' });
+      state.convs = state.convs.filter(x => x.id !== c.id);
+      resetCurrentIfGone(c.id);
+      renderConvList();
+      toast(mode === 'leave' ? '已退出群聊' : '会话已删除');
+    }
+  });
+}
+
+function closeConvMenu() { const m = document.getElementById('convCtxMenu'); if (m) m.remove(); }
+
+function openConvMenu(anchor, c) {
+  closeConvMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.id = 'convCtxMenu';
+  const isNovel = c.id.startsWith('novel:');
+  const items = [];
+  if (!isNovel && c.kind === 1) items.push({ label: '重命名', fn: () => renameConv(c.id, c.title) });
+  items.push({ label: archivedConvs().has(c.id) ? '从归档还原' : '归档', fn: () => archiveConv(c) });
+  if (!isNovel && c.kind !== 1 && c.project_id) {
+    items.push({ label: '移出项目', fn: async () => {
+      try {
+        await api('/api/conversations/' + encodeURIComponent(c.id) + '/project', { body: { project_id: '' } });
+        await refreshProjectsAndConvs();
+        toast('已移出项目');
+      } catch (e) { toast(e.message); }
+    } });
+  }
+  if (!isNovel) items.push({ label: c.kind === 1 ? '退出群聊' : '删除会话', danger: true, fn: () => deleteConv(c, c.kind === 1 ? 'leave' : 'delete') });
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    if (it.danger) b.classList.add('danger');
+    b.textContent = it.label;
+    b.onclick = () => { closeConvMenu(); it.fn(); };
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.visibility = 'hidden';
+  requestAnimationFrame(() => {
+    const top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8);
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8));
+    menu.style.top = top + 'px';
+    menu.style.left = left + 'px';
+    menu.style.visibility = 'visible';
+  });
+  setTimeout(() => {
+    document.addEventListener('pointerdown', e => { if (!menu.contains(e.target)) closeConvMenu(); }, { once: true });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeConvMenu(); }, { once: true });
+  });
+}
+
+function openConfirm({ title, body, okText, danger, onOk }) {
+  const root = $('#modalRoot');
+  root.innerHTML = '';
+  const overlay = document.createElement('div'); overlay.className = 'picker-overlay';
+  const panel = document.createElement('div'); panel.className = 'picker-panel confirm-modal';
+  const h = document.createElement('h3'); h.textContent = title;
+  const p = document.createElement('p'); p.className = 'confirm-body'; p.textContent = body;
+  const row = document.createElement('div'); row.className = 'confirm-actions';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'confirm-cancel'; cancel.textContent = '取消';
+  const ok = document.createElement('button'); ok.type = 'button'; ok.className = 'confirm-ok' + (danger ? ' danger' : ''); ok.textContent = okText || '确定';
+  const close = () => root.replaceChildren();
+  cancel.onclick = close;
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  ok.onclick = async () => {
+    ok.disabled = true;
+    try { await onOk(); close(); }
+    catch (e) { toast(e.message); ok.disabled = false; }
   };
-  wrap.append(button, action); list.appendChild(wrap);
+  row.append(cancel, ok);
+  panel.append(h, p, row);
+  overlay.appendChild(panel);
+  root.appendChild(overlay);
 }
 
 function openPicker(title) {
