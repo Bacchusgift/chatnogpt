@@ -310,6 +310,7 @@ type clientEvent struct {
 	Content     string `json:"content"`
 	ClientMsgID string `json:"client_msg_id"`
 	ImageID     string `json:"image_id"`
+	ReplyTo     string `json:"reply_to"`
 }
 
 func (cl *wsClient) handleMessage(raw []byte) {
@@ -323,7 +324,7 @@ func (cl *wsClient) handleMessage(raw []byte) {
 		if (content == "" && ev.ImageID == "") || len(content) > 6000 {
 			return
 		}
-		m, err := cl.srv.store.AddMessageWithImage(cl.convID, cl.userID, cl.nickname, content, ev.ClientMsgID, ev.ImageID)
+		m, err := cl.srv.store.AddMessageWithImage(cl.convID, cl.userID, cl.nickname, content, ev.ClientMsgID, ev.ImageID, ev.ReplyTo)
 		if err != nil {
 			return
 		}
@@ -337,6 +338,7 @@ func (cl *wsClient) handleMessage(raw []byte) {
 			"image_id":      m.ImageID,
 			"ts":            m.TS,
 			"client_msg_id": ev.ClientMsgID,
+			"reply_to":      ev.ReplyTo,
 		})
 		cl.srv.hub.broadcast(cl.convID, payload, nil)
 	case "typing":

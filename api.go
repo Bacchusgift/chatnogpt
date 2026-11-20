@@ -547,6 +547,7 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			Content     string `json:"content"`
 			ImageID     string `json:"image_id"`
 			ClientMsgID string `json:"client_msg_id"`
+			ReplyTo     string `json:"reply_to"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -557,7 +558,7 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("消息内容为空或超过 6000 字"))
 			return
 		}
-		m, err := s.store.AddMessageWithImage(convID, u.ID, u.Nickname, content, req.ClientMsgID, req.ImageID)
+		m, err := s.store.AddMessageWithImage(convID, u.ID, u.Nickname, content, req.ClientMsgID, req.ImageID, req.ReplyTo)
 		if err != nil {
 			writeErr(w, statusOf(err), err)
 			return
@@ -572,6 +573,7 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			"image_id":      m.ImageID,
 			"ts":            m.TS,
 			"client_msg_id": req.ClientMsgID,
+			"reply_to":      req.ReplyTo,
 		})
 		s.hub.broadcast(convID, payload, nil)
 		writeJSON(w, http.StatusOK, map[string]any{"message": m})
@@ -600,6 +602,36 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs, "has_more": beforeTS > 0 && len(msgs) == limit})
+	case len(parts) == 4 && parts[1] == "messages" && parts[3] == "react" && r.Method == http.MethodPost:
+		var req struct {
+			Emoji string `json:"emoji"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		valid := false
+		for _, e := range []string{"👍", "👎", "❤️", "😄", "😮", "😢"} {
+			if req.Emoji == e {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			writeErr(w, http.StatusBadRequest, errors.New("不支持的表情"))
+			return
+		}
+		added, err := s.store.ToggleReaction(convID, parts[2-1], u.ID, req.Emoji)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"type": "reaction", "conv_id": convID, "msg_id": parts[2],
+			"emoji": req.Emoji, "nickname": u.Nickname, "user_id": u.ID, "added": added,
+		})
+		s.hub.broadcast(convID, payload, nil)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added})
 	case len(parts) == 3 && parts[1] == "messages" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
 		content := ""
 		recall := r.Method == http.MethodDelete

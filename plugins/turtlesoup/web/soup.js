@@ -43,7 +43,7 @@
   const curConv = () => { const c = ctx().conv; return c ? c.id : null; };
   function isSoupCandidate() { const c = ctx().conv; return c && c.kind === 1; }
   function amHost() { const c = ctx().conv; return c && c.creator_id === ctx().me.id; }
-  function sendText(t) { CNGP.send(t); }
+  function sendText(t, replyTo) { CNGP.send(t, { replyTo: replyTo || '' }); }
 
   // ---- 基座 hook：cngp:conv-opened（契约见 plugins/README.md） ----
   CNGP.on('conv-opened', detail => {
@@ -227,11 +227,12 @@
     if (!actions || actions.querySelector('.ts-quick')) return;
     // 摘掉原点赞/点踩（位置与形态保留，语义变为快捷裁决），保留复制/刷新
     actions.querySelectorAll('button[aria-pressed]').forEach(b => b.remove());
+    const replyTo = row.dataset.mid || '';
     for (const q of TS_QUICKS) {
       const b = document.createElement('button');
       b.type = 'button'; b.title = q.label; b.setAttribute('aria-label', q.label); b.innerHTML = q.icon;
       b.className = 'ts-quick' + (q.down ? ' thumb-down' : '');
-      b.onclick = () => sendText(q.label);
+      b.onclick = () => sendText(q.label, replyTo);
       actions.appendChild(b);
     }
   }
@@ -245,4 +246,14 @@
   CNGP.on('message-actions', detail => {
     try { tsAugmentActions(detail.row); } catch (err) { }
   });
+  // 兜底：消息行可能在面板状态加载完成之后才流入（异步渲染），DOM 观察器补挂快捷按钮
+  new MutationObserver(muts => {
+    if (!isSoupCandidate() || !gs.game || gs.game.phase !== 1 || !gs.game.is_host) return;
+    for (const m of muts) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.querySelector && n.querySelector('.msg-actions')) tsAugmentActions(n);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 })();

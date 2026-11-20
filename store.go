@@ -50,13 +50,23 @@ type Project struct {
 const recalledMessageText = "消息已撤回"
 
 type Message struct {
-	ID          string `json:"id"`
-	SenderID    string `json:"sender_id"`
-	Nickname    string `json:"nickname"` // 发送时的昵称快照
-	Content     string `json:"content"`
-	TS          int64  `json:"ts"`
-	ClientMsgID string `json:"client_msg_id,omitempty"`
-	ImageID     string `json:"image_id,omitempty"`
+	ID          string        `json:"id"`
+	SenderID    string        `json:"sender_id"`
+	Nickname    string        `json:"nickname"` // 发送时的昵称快照
+	Content     string        `json:"content"`
+	TS          int64         `json:"ts"`
+	ClientMsgID string        `json:"client_msg_id,omitempty"`
+	ImageID     string        `json:"image_id,omitempty"`
+	ReplyTo     string        `json:"reply_to,omitempty"`  // 引用回复的目标消息 id
+	Reactions   []MsgReaction `json:"reactions,omitempty"` // 聚合的表情回应（读取时拼装）
+}
+
+// MsgReaction 单条表情回应（Nickname 为回应者昵称快照）。
+type MsgReaction struct {
+	MsgID    string `json:"msg_id"`
+	Emoji    string `json:"emoji"`
+	UserID   string `json:"user_id,omitempty"`
+	Nickname string `json:"nickname"`
 }
 
 type Conv struct {
@@ -172,7 +182,9 @@ type Store interface {
 	CanReadImage(id, userID string) (string, bool)
 	ListModels(exceptUserID string) []modelInfo
 	AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error)
-	AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error)
+	AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID, replyTo string) (*Message, error)
+	ToggleReaction(convID, msgID, userID, emoji string) (bool, error)
+	ListReactions(convID string) ([]MsgReaction, error)
 	UpdateOwnMessage(convID, senderID, msgID, content string, recall bool) (*Message, error)
 	HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error)
 	CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error)

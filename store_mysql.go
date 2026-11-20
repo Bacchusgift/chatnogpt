@@ -77,8 +77,18 @@ CREATE TABLE IF NOT EXISTS messages (
   ts BIGINT NOT NULL,
   client_msg_id VARCHAR(64) DEFAULT NULL,
   image_id VARCHAR(12) DEFAULT NULL,
+  reply_to VARCHAR(12) NOT NULL DEFAULT '',
   UNIQUE KEY uq_client (conv_id, client_msg_id),
   KEY idx_msg_conv_ts (conv_id, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS message_reactions (
+  conv_id CHAR(12) NOT NULL,
+  msg_id CHAR(12) NOT NULL,
+  user_id CHAR(12) NOT NULL,
+  emoji VARCHAR(8) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_react (msg_id, user_id, emoji),
+  KEY idx_react_conv (conv_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS images (
   id CHAR(12) PRIMARY KEY,
@@ -138,8 +148,11 @@ func newDBStore(dsn, dir string) (*dbStore, error) {
 	for _, column := range []string{"archived_at", "deleted_at"} {
 		if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN " + column + " BIGINT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
 			db.Close()
-			return nil, fmt.Errorf("初始化归档字段 %s: %w", column, err)
+			return nil, err
 		}
+	}
+	if _, err := db.Exec("ALTER TABLE messages ADD COLUMN reply_to VARCHAR(12) NOT NULL DEFAULT ''"); err != nil && sqlErrCode(err) != 1060 {
+		return nil, err
 	}
 	return &dbStore{db: db, dir: dir}, nil
 }
@@ -732,10 +745,10 @@ func (s *dbStore) ListModels(exceptUserID string) []modelInfo {
 // ---- messages ----
 
 func (s *dbStore) AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error) {
-	return s.AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, "")
+	return s.AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, "", "")
 }
 
-func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
+func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID, replyTo string) (*Message, error) {
 	if err := s.PurgeExpiredArchives(); err != nil {
 		return nil, err
 	}
@@ -756,13 +769,22 @@ func (s *dbStore) AddMessageWithImage(convID, senderID, nickname, content, clien
 			return nil, ErrNotFound
 		}
 	}
-	m := &Message{
-		ID: newID(), SenderID: senderID, Nickname: nickname,
-		Content: content, TS: now(), ClientMsgID: clientMsgID, ImageID: imageID,
+	if replyTo != "" {
+		var rt int
+		if err := s.db.QueryRow("SELECT 1 FROM messages WHERE id=? AND conv_id=?", replyTo, convID).Scan(&rt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrNotFound
+			}
+			return nil, err
+		}
 	}
-	if _, err := s.db.Exec(`INSERT INTO messages (id, conv_id, sender_id, nickname, content, ts, client_msg_id, image_id)
-		VALUES (?,?,?,?,?,?,?,?)`,
-		m.ID, convID, m.SenderID, m.Nickname, m.Content, m.TS, nullStr(m.ClientMsgID), nullStr(m.ImageID)); err != nil {
+	m := &Message{
+		ID: newID(), SenderID: senderID, Nickname: nickname, Content: content, TS: now(),
+		ClientMsgID: clientMsgID, ImageID: imageID, ReplyTo: replyTo,
+	}
+	if _, err := s.db.Exec(`INSERT INTO messages (id, conv_id, sender_id, nickname, content, ts, client_msg_id, image_id, reply_to)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		m.ID, convID, m.SenderID, m.Nickname, m.Content, m.TS, nullStr(m.ClientMsgID), nullStr(m.ImageID), m.ReplyTo); err != nil {
 		if sqlErrCode(err) == 1062 {
 			// 客户端重发同一条消息：视为成功，返回已存在的记录
 			if prev := s.messageByClientID(convID, clientMsgID); prev != nil {
@@ -816,6 +838,53 @@ func (s *dbStore) UpdateOwnMessage(convID, senderID, msgID, content string, reca
 	return &m, nil
 }
 
+// ToggleReaction 对某条消息切换表情回应（同一用户同一表情仅一条），返回是否为新增。
+func (s *dbStore) ToggleReaction(convID, msgID, userID, emoji string) (bool, error) {
+	var one int
+	if err := s.db.QueryRow("SELECT 1 FROM messages WHERE id=? AND conv_id=?", msgID, convID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	var exists int
+	err := s.db.QueryRow("SELECT 1 FROM message_reactions WHERE msg_id=? AND user_id=? AND emoji=?",
+		msgID, userID, emoji).Scan(&exists)
+	if err == nil {
+		if _, err := s.db.Exec("DELETE FROM message_reactions WHERE msg_id=? AND user_id=? AND emoji=?",
+			msgID, userID, emoji); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if _, err := s.db.Exec("INSERT INTO message_reactions (conv_id, msg_id, user_id, emoji, created_at) VALUES (?,?,?,?,?)",
+		convID, msgID, userID, emoji, now()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ListReactions 汇总会话内全部表情回应（含回应者昵称）。
+func (s *dbStore) ListReactions(convID string) ([]MsgReaction, error) {
+	rows, err := s.db.Query(`SELECT mr.msg_id, mr.emoji, mr.user_id, COALESCE(u.nickname,'')
+		FROM message_reactions mr LEFT JOIN users u ON u.id=mr.user_id WHERE mr.conv_id=? ORDER BY mr.created_at`, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MsgReaction{}
+	for rows.Next() {
+		var r MsgReaction
+		if err := rows.Scan(&r.MsgID, &r.Emoji, &r.UserID, &r.Nickname); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *dbStore) messageByClientID(convID, clientMsgID string) *Message {
 	if clientMsgID == "" {
 		return nil
@@ -828,6 +897,43 @@ func (s *dbStore) messageByClientID(convID, clientMsgID string) *Message {
 		return nil
 	}
 	return &m
+}
+
+// attachMeta 为消息补齐 reply_to 与聚合表情回应（批量查询，避免 N+1）。
+func (s *dbStore) attachMeta(convID string, msgs []*Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	replyMap := map[string]string{}
+	rows, err := s.db.Query("SELECT id, reply_to FROM messages WHERE conv_id=? AND reply_to<>''", convID)
+	if err == nil {
+		for rows.Next() {
+			var id, rt string
+			if rows.Scan(&id, &rt) == nil {
+				replyMap[id] = rt
+			}
+		}
+		rows.Close()
+	}
+	reactMap := map[string][]MsgReaction{}
+	if rrows, err := s.db.Query(`SELECT mr.msg_id, mr.emoji, mr.user_id, COALESCE(u.nickname,'')
+		FROM message_reactions mr LEFT JOIN users u ON u.id=mr.user_id WHERE mr.conv_id=? ORDER BY mr.created_at`, convID); err == nil {
+		for rrows.Next() {
+			var r MsgReaction
+			if rrows.Scan(&r.MsgID, &r.Emoji, &r.UserID, &r.Nickname) == nil {
+				reactMap[r.MsgID] = append(reactMap[r.MsgID], r)
+			}
+		}
+		rrows.Close()
+	}
+	for _, m := range msgs {
+		if rt, ok := replyMap[m.ID]; ok {
+			m.ReplyTo = rt
+		}
+		if rs, ok := reactMap[m.ID]; ok && len(rs) > 0 {
+			m.Reactions = rs
+		}
+	}
 }
 
 // HistoryMessages returns messages in ascending order. afterTS>0 keeps only
@@ -873,6 +979,7 @@ func (s *dbStore) HistoryMessages(convID, userID string, afterTS, beforeTS int64
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
+	s.attachMeta(convID, out)
 	return out, nil
 }
 

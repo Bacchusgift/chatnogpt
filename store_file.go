@@ -43,6 +43,7 @@ type fileConv struct {
 	Kind      int                `json:"kind"`
 	Members   map[string]*Member `json:"members"`
 	Messages  []*Message         `json:"messages"`
+	Reactions []*MsgReaction      `json:"reactions,omitempty"`
 }
 
 func newFileStore(dir string) (*fileStore, error) {
@@ -171,7 +172,58 @@ func (s *fileStore) CreateUser(username, nickname, password string) (*User, stri
 	return u, token, nil
 }
 
-// SearchUsers 按昵称/用户名模糊搜索成员（排除调用者），供群聊邀请选择。
+// ToggleReaction 对某条消息切换表情回应，返回是否为新增。
+func (s *fileStore) ToggleReaction(convID, msgID, userID, emoji string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return false, ErrNotFound
+	}
+	found := false
+	for _, prev := range c.Messages {
+		if prev.ID == msgID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false, ErrNotFound
+	}
+	for i, r := range c.Reactions {
+		if r.MsgID == msgID && r.UserID == userID && r.Emoji == emoji {
+			c.Reactions = append(c.Reactions[:i], c.Reactions[i+1:]...)
+			return false, nil
+		}
+	}
+	c.Reactions = append(c.Reactions, &MsgReaction{MsgID: msgID, Emoji: emoji, UserID: userID, Nickname: s.nicknameOf(userID)})
+	return true, nil
+}
+
+// ListReactions 汇总会话内全部表情回应。
+func (s *fileStore) ListReactions(convID string) ([]MsgReaction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	out := []MsgReaction{}
+	for _, r := range c.Reactions {
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
+// nicknameOf 按用户 id 取昵称（未命中返回空串）。
+func (s *fileStore) nicknameOf(userID string) string {
+	if u := s.d.Users[userID]; u != nil {
+		return u.Nickname
+	}
+	return ""
+}
+
+// SearchUsers // SearchUsers 按昵称/用户名模糊搜索成员（排除调用者），供群聊邀请选择。
 // SetConvDeleted 软删除/恢复会话（仅影响调用者自己的成员行，对端不受影响）。
 func (s *fileStore) SetConvDeleted(convID, userID string, deleted bool) error {
 	s.mu.Lock()
@@ -660,10 +712,10 @@ func (s *fileStore) ListModels(exceptUserID string) []modelInfo {
 // ---- messages ----
 
 func (s *fileStore) AddMessage(convID, senderID, nickname, content, clientMsgID string) (*Message, error) {
-	return s.AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, "")
+	return s.AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, "", "")
 }
 
-func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID string) (*Message, error) {
+func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, clientMsgID, imageID, replyTo string) (*Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.purgeExpiredArchivesLocked()
@@ -682,9 +734,21 @@ func (s *fileStore) AddMessageWithImage(convID, senderID, nickname, content, cli
 			return nil, ErrNotFound
 		}
 	}
+	if replyTo != "" {
+		found := false
+		for _, prev := range c.Messages {
+			if prev.ID == replyTo {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, ErrNotFound
+		}
+	}
 	m := &Message{
-		ID: newID(), SenderID: senderID, Nickname: nickname,
-		Content: content, TS: now(), ClientMsgID: clientMsgID, ImageID: imageID,
+		ID: newID(), SenderID: senderID, Nickname: nickname, Content: content, TS: now(),
+		ClientMsgID: clientMsgID, ImageID: imageID, ReplyTo: replyTo,
 	}
 	if clientMsgID != "" {
 		for _, prev := range c.Messages {

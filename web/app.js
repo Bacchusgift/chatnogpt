@@ -40,6 +40,8 @@ const state = {
   imageURLs: new Map(), // 已认证图片的本地 blob URL
   access: '完全访问', // 装饰性“权限档位”
   coverMode: localStorage.getItem('cngp_effort') === 'max', // 思考伪装（覆盖真实对话）
+  msgIndex: {},      // 消息索引（id → 摘要），引用回复用
+  reactions: {},     // 表情回应聚合（msgId → {emoji: [昵称]})
   coverLines: [],     // 服务端内置文稿
   readIDs: new Set(), // 当前账号和会话中已展示的消息 id（仅本地）
 };
@@ -1346,8 +1348,8 @@ async function selectConv(id) {
     for (const m of msgs) {
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
-      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
-      else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+      if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id, '', m);
+      else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id, m);
       rememberRead(m.id);
     }
     state.firstMsg = msgs.length ? { ts: msgs[0].ts, id: msgs[0].id } : null;
@@ -1359,6 +1361,91 @@ async function selectConv(id) {
     $('#input').focus();
     window.dispatchEvent(new CustomEvent('cngp:conv-opened', { detail: { id, conv: state.curInfo } }));
   } catch (e) { toast(e.message); }
+}
+
+
+
+// 消息索引：id → {nickname, content}，供引用回复摘要与跳转
+function rememberMsgIndex(id, nickname, content) {
+  if (!id) return;
+  state.msgIndex = state.msgIndex || {};
+  state.msgIndex[id] = { nickname, content: (content || '').slice(0, 80) };
+}
+function appendQuoteBlock(row, m) {
+  if (!m || !m.reply_to) return;
+  const q = document.createElement('div');
+  q.className = 'msg-quote';
+  const src = (state.msgIndex || {})[m.reply_to];
+  const who = src ? src.nickname : '';
+  const snip = src ? src.content.replace(/\s+/g, ' ').slice(0, 60) : '原消息';
+  const whoEl = document.createElement('span'); whoEl.className = 'quote-who'; whoEl.textContent = '↩ ' + who;
+  const txtEl = document.createElement('span'); txtEl.className = 'quote-text'; txtEl.textContent = snip;
+  q.append(whoEl, txtEl);
+  q.onclick = () => scrollToMsg(m.reply_to);
+  const wrap = row.querySelector('.real-wrap') || row;
+  const body = wrap.querySelector('.ai-body, .bubble, .own-original');
+  if (body) wrap.insertBefore(q, body); else wrap.appendChild(q);
+}
+function scrollToMsg(mid) {
+  const row = document.querySelector('#messages [data-mid="' + mid + '"]');
+  if (!row) { toast('原消息不在已加载范围内'); return; }
+  row.scrollIntoView({ block: 'center' });
+  row.classList.add('search-flash');
+  setTimeout(() => row.classList.remove('search-flash'), 1600);
+}
+// 表情回应：聚合渲染（msgId → {emoji: [nickname...]}) 与单行刷新
+function reactionsKeyed(msg) {
+  const map = {};
+  for (const r of msg.reactions || []) {
+    (map[r.emoji] = map[r.emoji] || []).push(r.nickname);
+  }
+  return map;
+}
+function renderReactions(row, msgId) {
+  const map = (state.reactions || {})[msgId];
+  let box = row.querySelector('.msg-reactions');
+  if (!map || !Object.keys(map).length) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'msg-reactions';
+    const actions = row.querySelector('.msg-actions, .own-actions');
+    if (actions) row.insertBefore(box, actions); else row.appendChild(box);
+  }
+  box.replaceChildren();
+  const me = CNGP.context().me;
+  for (const [emoji, names] of Object.entries(map)) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'react-chip' + (me && names.includes(me.nickname) ? ' mine' : '');
+    chip.textContent = emoji + ' ' + names.length;
+    chip.title = names.join('、');
+    chip.onclick = () => CNGP.react(msgId, emoji);
+    box.appendChild(chip);
+  }
+}
+function openReactPicker(anchor, msgId) {
+  document.getElementById('reactPicker')?.remove();
+  const pop = document.createElement('div');
+  pop.id = 'reactPicker';
+  pop.className = 'ctx-menu react-picker';
+  for (const emoji of ['👍', '👎', '❤️', '😄', '😮', '😢']) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = emoji;
+    b.onclick = () => { pop.remove(); CNGP.react(msgId, emoji); };
+    pop.appendChild(b);
+  }
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.visibility = 'hidden';
+  requestAnimationFrame(() => {
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 6) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+    pop.style.visibility = 'visible';
+  });
+  setTimeout(() => {
+    document.addEventListener('pointerdown', e => { if (!pop.contains(e.target)) pop.remove(); }, { once: true });
+  });
 }
 
 function appendWelcome(title) {
@@ -1457,13 +1544,15 @@ function openImageLightbox(src) {
   document.addEventListener('keydown', onKey); close.focus();
 }
 
-function appendOwn(content, ts, msgId, imageID, localID = '') {
+function appendOwn(content, ts, msgId, imageID, localID = '', m = null) {
+  m = m || { id: msgId, reply_to: '', reactions: null };
   removeWelcome();
   const wrap = document.createElement('div');
   wrap.className = 'msg-own';
   if (msgId) wrap.dataset.mid = msgId;
   if (msgId) wrap.dataset.msgId = msgId;
   if (localID) wrap.dataset.localId = localID;
+  rememberMsgIndex(msgId, state.me ? state.me.nickname : '', content);
   const realWrap = document.createElement('div');
   realWrap.className = 'real-wrap';
   const b = document.createElement('div');
@@ -1490,7 +1579,9 @@ function appendOwn(content, ts, msgId, imageID, localID = '') {
     b.title = fullStamp(ts);
   }
   realWrap.appendChild(b);
+  appendQuoteBlock(wrap, m);
   wrap.appendChild(realWrap);
+  if (m.reactions) { (state.reactions = state.reactions || {})[m.id] = reactionsKeyed(m); renderReactions(wrap, m.id); }
   const actions = document.createElement('div');
   actions.className = 'own-actions';
   const copy = makeMessageAction('复制', messageCopyIcon);
@@ -1620,6 +1711,9 @@ function addMessageVotes(actions) {
   actions.append(up, down);
 }
 
+const replyIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M9 14 4 9l5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const reactIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 14s1.2 1.8 3.5 1.8S15.5 14 15.5 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M9 9.5v1M15 9.5v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
 function addAIActions(row, content) {
   const actions = document.createElement('div'); actions.className = 'msg-actions';
   const copy = makeMessageAction('复制', messageCopyIcon);
@@ -1632,11 +1726,18 @@ function addAIActions(row, content) {
   refresh.onclick = () => {};
   actions.append(copy, refresh);
   addMessageVotes(actions);
+  // 平台能力：引用回复 + 表情回应（iMessage tapback 式反馈）
+  const reply = makeMessageAction('回复', replyIcon);
+  reply.onclick = () => setReplyTo(row.dataset.mid, row.dataset.nickname, content);
+  const react = makeMessageAction('表情回应', reactIcon);
+  react.onclick = e => { e.stopPropagation(); openReactPicker(react, row.dataset.mid); };
+  actions.append(reply, react);
   row.appendChild(actions);
   window.dispatchEvent(new CustomEvent('cngp:message-actions', { detail: { row, actions, content } }));
 }
 
-function appendAIStatic(nickname, content, ts, msgId, imageID) {
+function appendAIStatic(nickname, content, ts, msgId, imageID, m = null) {
+  m = m || { id: msgId, reply_to: '', reactions: null };
   if (ts) ensureDivider(ts);
   const r = appendAIRow(nickname);
   if (msgId) r.row.dataset.mid = msgId;
@@ -1656,6 +1757,9 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
     r.row.classList.add('covered');
     bindFlashlight(r.row);
   }
+  rememberMsgIndex(msgId, nickname, content);
+  appendQuoteBlock(r.row, m);
+  if (m.reactions) { (state.reactions = state.reactions || {})[m.id] = reactionsKeyed(m); renderReactions(r.row, m.id); }
   addAIActions(r.row, content);
 }
 
@@ -1831,8 +1935,8 @@ function prependOlder(older) {
       frag.appendChild(div);
     }
     lastTS = m.ts;
-    if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id);
-    else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+    if (m.sender_id === state.me.id) appendOwn(m.content, m.ts, m.id, m.image_id, '', m);
+    else appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id, m);
     rememberRead(m.id);
     while (box.lastChild !== first && box.lastChild) frag.appendChild(box.lastChild);
   }
@@ -1915,10 +2019,10 @@ async function syncMissed(id) {
       state.seenMsg.add(m.id);
       if (m.ts > state.lastTS) state.lastTS = m.ts;
       if (m.sender_id === state.me.id) {
-        appendOwn(m.content, m.ts, m.id, m.image_id);
+        appendOwn(m.content, m.ts, m.id, m.image_id, '', m);
         rememberRead(m.id);
       } else if (state.coverMode && state.readIDs.has(m.id)) {
-        appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id);
+        appendAIStatic(m.nickname, m.content, m.ts, m.id, m.image_id, m);
       } else {
         enqueueAI(m.nickname, m.content, null, m.ts, msgKeyOf(m.id, m.nickname, m.content), true, m.image_id);
       }
@@ -1959,6 +2063,28 @@ function handleEvent(ev) {
       }
     }
     return;
+  }
+  if (ev.type === 'reaction') {
+    state.reactions = state.reactions || {};
+    const map = (state.reactions[ev.msg_id] = state.reactions[ev.msg_id] || {});
+    const list = map[ev.emoji] || [];
+    const i = list.indexOf(ev.nickname);
+    if (ev.added) { if (i === -1) list.push(ev.nickname); }
+    else if (i !== -1) list.splice(i, 1);
+    if (!list.length) delete map[ev.emoji];
+    const row = document.querySelector('#messages [data-mid="' + ev.msg_id + '"]');
+    if (row) renderReactions(row, ev.msg_id);
+  }
+  if (ev.type === 'reaction') {
+    state.reactions = state.reactions || {};
+    const map = (state.reactions[ev.msg_id] = state.reactions[ev.msg_id] || {});
+    const list = map[ev.emoji] || [];
+    const i = list.indexOf(ev.nickname);
+    if (ev.added) { if (i === -1) list.push(ev.nickname); }
+    else if (i !== -1) list.splice(i, 1);
+    if (!list.length) delete map[ev.emoji];
+    const row = document.querySelector('#messages [data-mid="' + ev.msg_id + '"]');
+    if (row) renderReactions(row, ev.msg_id);
   }
   if (ev.type === 'msg') {
     if (state.seenMsg.has(ev.id)) return;
@@ -2368,11 +2494,12 @@ function doSend(payload) {
     ? crypto.randomUUID()
     : Date.now() + '-' + Math.random().toString(36).slice(2));
   state.pending.add(cmid);
-  appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID).dataset.clientMsgId = cmid;
+  appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID, '',
+    payload.replyTo ? { reply_to: payload.replyTo, reactions: null } : null).dataset.clientMsgId = cmid;
   scrollFollow();
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: payload.text,
-    image_id: payload.imageID || '', client_msg_id: cmid }));
+    image_id: payload.imageID || '', client_msg_id: cmid, reply_to: payload.replyTo || '' }));
 }
 
 async function send() {
@@ -2413,20 +2540,48 @@ async function send() {
       const d = await api('/api/conversations/with', { body: { peer_id: targetID } });
       destConv = d.conversation.id;
     }
+    const replyTo = state.replyTo && state.replyTo.id ? state.replyTo.id : '';
     if (state.cur === destConv && state.wsConv === destConv && state.ws?.readyState === 1) {
-      doSend({ text, imageID });
+      doSend({ text, imageID, replyTo });
     } else {
       const cmid = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
       await api('/api/conversations/' + encodeURIComponent(destConv) + '/send',
-        { body: { content: text, image_id: imageID, client_msg_id: cmid } });
+        { body: { content: text, image_id: imageID, client_msg_id: cmid, reply_to: replyTo } });
       if (state.cur !== destConv) loadConvs(true).catch(() => {});
     }
     if (input.value === text) { input.value = ''; autoGrow(); }
+    if (replyTo) clearReplyTo();
     if (attachment === state.attachment) removeAttachment();
   } catch (e) {
     toast(e.message);
     if (!input.value.trim()) { input.value = text; autoGrow(); }
   } finally { state.sending = false; updateSendButton(); }
+}
+
+// 引用回复：composer 上方的指示条（谁：摘要 ×），发送时附带 reply_to
+function setReplyTo(mid, nickname, content) {
+  const src = (state.msgIndex || {})[mid];
+  state.replyTo = { id: mid, nickname: nickname || (src && src.nickname) || '', snippet: (content || '').slice(0, 60) };
+  renderReplyIndicator();
+  $('#input').focus();
+}
+function clearReplyTo() {
+  state.replyTo = null;
+  renderReplyIndicator();
+}
+function renderReplyIndicator() {
+  document.getElementById('replyIndicator')?.remove();
+  if (!state.replyTo) return;
+  const bar = document.createElement('div');
+  bar.id = 'replyIndicator';
+  bar.className = 'reply-indicator';
+  const txt = document.createElement('span');
+  txt.textContent = '回复 ' + state.replyTo.nickname + '：' + state.replyTo.snippet;
+  const x = document.createElement('button');
+  x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', '取消回复');
+  x.onclick = clearReplyTo;
+  bar.append(txt, x);
+  document.querySelector('.composer').prepend(bar);
 }
 
 function autoGrow() {
@@ -2710,17 +2865,22 @@ window.CNGP = {
   // 轻提示
   toast: msg => toast(msg),
   // 向当前会话发送一条消息（走正常通道，伪装一致；视图不在会话时自动 REST 兜底投递）
-  send(text) {
+  send(text, opts = {}) {
     const conv = state.cur;
     if (!conv) { toast('请先选择一个会话'); return false; }
     if (state.wsConv === conv && state.ws && state.ws.readyState === 1) {
-      doSend({ text });
+      doSend({ text, replyTo: opts.replyTo || '' });
       return true;
     }
     const cmid = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
     api('/api/conversations/' + encodeURIComponent(conv) + '/send',
-      { body: { content: text, client_msg_id: cmid } }).catch(e => toast(e.message));
+      { body: { content: text, client_msg_id: cmid, reply_to: opts.replyTo || '' } }).catch(e => toast(e.message));
     return true;
+  },
+  // 对单条消息切换表情回应（iMessage tapback 式反馈）
+  react(msgID, emoji) {
+    return api('/api/conversations/' + encodeURIComponent(state.cur) + '/messages/' + encodeURIComponent(msgID) + '/react',
+      { body: { emoji } }).catch(e => { toast(e.message); });
   },
   // 当前上下文只读快照：{ me, conv, coverMode }
   context() {
