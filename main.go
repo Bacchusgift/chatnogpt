@@ -277,6 +277,7 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/model-suggest", s.handleModelSuggest)
+	mux.HandleFunc("/api/users", s.handleUsers)
 	mux.HandleFunc("/api/cover-lines", s.handleCoverLines)
 	mux.HandleFunc("/api/rooms", s.handleRooms)
 	mux.HandleFunc("/api/search", s.handleSearch)

@@ -205,6 +205,20 @@ func (s *server) handleModelSuggest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": s.store.SuggestModelName()})
 }
 
+// handleUsers searches display names for group invites (auth required).
+func (s *server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": s.store.SearchUsers(r.URL.Query().Get("q"), u.ID)})
+}
+
 // handleCoverLines returns the thinking-disguise cover pool (auth required).
 func (s *server) handleCoverLines(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

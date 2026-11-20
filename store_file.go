@@ -171,6 +171,33 @@ func (s *fileStore) CreateUser(username, nickname, password string) (*User, stri
 	return u, token, nil
 }
 
+// SearchUsers 按昵称/用户名模糊搜索成员（排除调用者），供群聊邀请选择。
+func (s *fileStore) SearchUsers(q, excludeUserID string) []UserBrief {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := []UserBrief{}
+	for _, u := range s.d.Users {
+		if u.ID == excludeUserID {
+			continue
+		}
+		if needle == "" ||
+			strings.Contains(strings.ToLower(u.Nickname), needle) ||
+			strings.Contains(strings.ToLower(u.Username), needle) {
+			out = append(out, UserBrief{ID: u.ID, Nickname: u.Nickname})
+		}
+		if len(out) >= 8 {
+			break
+		}
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].Nickname < out[j-1].Nickname; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
 func (s *fileStore) SuggestModelName() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

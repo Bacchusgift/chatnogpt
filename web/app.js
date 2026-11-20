@@ -949,53 +949,155 @@ function createRoomModal() {
   const root = $('#modalRoot');
   root.innerHTML = '';
   const overlay = document.createElement('div');
-  overlay.className = 'picker-overlay';
+  overlay.className = 'picker-overlay rmodal-overlay';
   const panel = document.createElement('div');
-  panel.className = 'picker-panel';
+  panel.className = 'picker-panel rmodal';
+
   const heading = document.createElement('h2');
+  heading.className = 'rmodal-title';
   heading.textContent = '创建群聊室';
+  const sub = document.createElement('p');
+  sub.className = 'rmodal-sub';
+  sub.textContent = '邀请成员一起聊天，或开启插件玩法。';
+
+  // —— 房间名称 ——
+  const lblTitle = document.createElement('label');
+  lblTitle.className = 'rmodal-label';
+  lblTitle.textContent = '房间名称';
   const titleField = document.createElement('input');
-  titleField.placeholder = '房间名称';
+  titleField.className = 'rmodal-input';
+  titleField.placeholder = '给这个群起个名字';
   titleField.maxLength = 60;
-  const inviteField = document.createElement('input');
-  inviteField.placeholder = '邀请成员（模型名，用逗号分隔，可留空）';
-  // 对话模式：普通对话 + 插件注册的模式（如海龟汤）
+
+  // —— 邀请成员（搜索 + 标签） ——
+  const lblInvite = document.createElement('label');
+  lblInvite.className = 'rmodal-label';
+  lblInvite.textContent = '邀请成员';
+  const searchWrap = document.createElement('div');
+  searchWrap.className = 'rmodal-search';
+  const searchIcon = document.createElement('span');
+  searchIcon.className = 'rmodal-search-icon';
+  searchIcon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const searchField = document.createElement('input');
+  searchField.className = 'rmodal-input rmodal-search-input';
+  searchField.placeholder = '搜索模型名，回车确认';
+  searchField.autocomplete = 'off';
+  searchWrap.append(searchIcon, searchField);
+  const drop = document.createElement('div');
+  drop.className = 'rmodal-drop hidden';
+  const chips = document.createElement('div');
+  chips.className = 'rmodal-chips';
+  const selected = [];
+  const renderChips = () => {
+    chips.replaceChildren();
+    for (const name of selected) {
+      const c = document.createElement('span');
+      c.className = 'rmodal-chip';
+      const t = document.createElement('span');
+      t.textContent = name;
+      const x = document.createElement('button');
+      x.type = 'button'; x.className = 'rmodal-chip-x'; x.textContent = '×';
+      x.setAttribute('aria-label', '移除 ' + name);
+      x.onclick = () => { selected.splice(selected.indexOf(name), 1); renderChips(); };
+      c.append(t, x);
+      chips.appendChild(c);
+    }
+    if (!selected.length) {
+      const hint = document.createElement('span');
+      hint.className = 'rmodal-chips-hint';
+      hint.textContent = '还没邀请成员，可留空稍后邀请';
+      chips.appendChild(hint);
+    }
+  };
+  renderChips();
+  let searchTimer = null;
+  const renderDrop = users => {
+    drop.replaceChildren();
+    if (!users.length) { drop.classList.add('hidden'); return; }
+    for (const u of users) {
+      if (selected.includes(u.nickname)) continue;
+      const item = document.createElement('button');
+      item.type = 'button'; item.className = 'rmodal-drop-item';
+      const av = document.createElement('span');
+      av.className = 'rmodal-drop-av';
+      av.textContent = (u.nickname[0] || '?').toUpperCase();
+      const nm = document.createElement('span');
+      nm.textContent = u.nickname;
+      item.append(av, nm);
+      item.onclick = () => {
+        selected.push(u.nickname);
+        renderChips();
+        searchField.value = '';
+        drop.classList.add('hidden');
+      };
+      drop.appendChild(item);
+    }
+    drop.classList.remove('hidden');
+  };
+  searchField.oninput = () => {
+    clearTimeout(searchTimer);
+    const q = searchField.value.trim();
+    if (!q) { drop.classList.add('hidden'); return; }
+    searchTimer = setTimeout(async () => {
+      try {
+        const d = await api('/api/users?q=' + encodeURIComponent(q));
+        renderDrop(d.users || []);
+      } catch (e) { drop.classList.add('hidden'); }
+    }, 160);
+  };
+  searchField.onkeydown = e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = searchField.value.trim();
+      if (q && !selected.includes(q)) { selected.push(q); renderChips(); searchField.value = ''; }
+      drop.classList.add('hidden');
+    } else if (e.key === 'Escape') {
+      drop.classList.add('hidden');
+    }
+  };
+
+  // —— 对话模式（分段选择器） ——
+  const lblMode = document.createElement('label');
+  lblMode.className = 'rmodal-label';
+  lblMode.textContent = '对话模式';
   const extraModes = Array.isArray(window.cngpRoomModes) ? window.cngpRoomModes.filter(m => m && m.id && m.label) : [];
   let roomMode = '';
-  let modeRow = null;
-  if (extraModes.length) {
-    modeRow = document.createElement('div');
-    modeRow.className = 'room-mode-row';
-    const modeLbl = document.createElement('span');
-    modeLbl.className = 'room-mode-label';
-    modeLbl.textContent = '对话模式：';
-    const mkMode = (id, label) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'room-mode-btn' + (roomMode === id ? ' active' : '');
-      b.textContent = label;
-      b.onclick = () => {
-        roomMode = id;
-        [...modeRow.querySelectorAll('.room-mode-btn')].forEach(x => x.classList.remove('active'));
-        b.classList.add('active');
-      };
-      return b;
+  const modeRow = document.createElement('div');
+  modeRow.className = 'rmodal-seg';
+  const mkMode = (id, label) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rmodal-seg-btn' + (roomMode === id ? ' active' : '');
+    b.textContent = label;
+    b.onclick = () => {
+      roomMode = id;
+      [...modeRow.querySelectorAll('.rmodal-seg-btn')].forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
     };
-    modeRow.append(modeLbl, mkMode('', '普通对话'));
-    for (const m of extraModes) modeRow.append(mkMode(m.id, m.label));
-  }
+    return b;
+  };
+  modeRow.append(mkMode('', '普通对话'));
+  for (const m of extraModes) modeRow.append(mkMode(m.id, m.label));
+
+  // —— 状态 / 按钮 ——
   const status = document.createElement('p');
-  status.className = 'novel-hint';
-  status.style.margin = '8px 0 0';
+  status.className = 'rmodal-status';
+  const actions = document.createElement('div');
+  actions.className = 'rmodal-actions';
   const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'rmodal-primary';
   save.textContent = '创建房间';
-  const close = () => { root.innerHTML = ''; };
   const cancel = document.createElement('button');
-  cancel.className = 'cancel';
+  cancel.type = 'button';
+  cancel.className = 'rmodal-cancel';
   cancel.textContent = '取消';
+  const close = () => { root.innerHTML = ''; };
   cancel.onclick = close;
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  panel.onkeydown = e => { if (e.key === 'Escape') close(); };
   save.onclick = async () => {
-    const invite = inviteField.value.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean);
+    const invite = selected.slice();
     save.disabled = true;
     status.textContent = '';
     try {
@@ -1011,9 +1113,9 @@ function createRoomModal() {
       status.textContent = e.message;
     }
   };
-  panel.append(heading, titleField, inviteField);
-  if (modeRow) panel.append(modeRow);
-  panel.append(status, save, cancel);
+
+  panel.append(heading, sub, lblTitle, titleField, lblInvite, searchWrap, drop, chips, lblMode, modeRow, status, actions);
+  actions.append(save, cancel);
   overlay.appendChild(panel);
   root.appendChild(overlay);
   titleField.focus();

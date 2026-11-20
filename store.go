@@ -91,6 +91,12 @@ type convSummary struct {
 	ProjectID    string `json:"project_id,omitempty"`
 }
 
+// UserBrief 群成员搜索结果（仅公开字段）。
+type UserBrief struct {
+	ID       string `json:"id"`
+	Nickname string `json:"nickname"`
+}
+
 type publicMember struct {
 	ID       string `json:"id"`
 	Nickname string `json:"nickname"`
@@ -148,6 +154,7 @@ type Store interface {
 	UserByToken(token string) *User
 	DropToken(token string)
 	SuggestModelName() string
+	SearchUsers(q, excludeUserID string) []UserBrief
 	CreateConv(u *User, title string) convBrief
 	JoinConv(u *User, code, title string) (convBrief, error)
 	ListConvs(userID string) []convSummary

@@ -251,6 +251,26 @@ var modelNames = []string{
 }
 
 // SuggestModelName returns an unused model-style name for the register form.
+// SearchUsers 按昵称/用户名模糊搜索成员（排除调用者），供群聊邀请选择。
+func (s *dbStore) SearchUsers(q, excludeUserID string) []UserBrief {
+	pattern := "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(strings.ToLower(strings.TrimSpace(q))) + "%"
+	rows, err := s.db.Query(`SELECT id, nickname FROM users
+		WHERE id<>? AND (nickname_lc LIKE ? OR username_lc LIKE ?)
+		ORDER BY nickname_lc LIMIT 8`, excludeUserID, pattern, pattern)
+	if err != nil {
+		return []UserBrief{}
+	}
+	defer rows.Close()
+	out := []UserBrief{}
+	for rows.Next() {
+		var u UserBrief
+		if err := rows.Scan(&u.ID, &u.Nickname); err == nil {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
 func (s *dbStore) SuggestModelName() string {
 	for i := 0; i < 32; i++ {
 		name := modelNames[fastrand()%len(modelNames)]
