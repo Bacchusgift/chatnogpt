@@ -425,8 +425,11 @@ function showApp() {
   if (state.coverMode) ensureCoverPool();
   loadProjects();
   loadConvs();
-  ensurePluginScript('novel-reader', '/plugins/novel-reader/novel.js?v=1.9.0')
-    .then(() => { if (typeof novelLoad === 'function') novelLoad(); });
+  for (const [pname, psrc] of Object.entries(PLUGIN_SCRIPTS)) {
+    ensurePluginScript(pname, psrc).then(() => {
+      if (pname === 'novel-reader' && typeof novelLoad === 'function') novelLoad();
+    });
+  }
   maybeShowNotifBanner();
 }
 
@@ -956,6 +959,31 @@ function createRoomModal() {
   titleField.maxLength = 60;
   const inviteField = document.createElement('input');
   inviteField.placeholder = '邀请成员（模型名，用逗号分隔，可留空）';
+  // 对话模式：普通对话 + 插件注册的模式（如海龟汤）
+  const extraModes = Array.isArray(window.cngpRoomModes) ? window.cngpRoomModes.filter(m => m && m.id && m.label) : [];
+  let roomMode = '';
+  let modeRow = null;
+  if (extraModes.length) {
+    modeRow = document.createElement('div');
+    modeRow.className = 'room-mode-row';
+    const modeLbl = document.createElement('span');
+    modeLbl.className = 'room-mode-label';
+    modeLbl.textContent = '对话模式：';
+    const mkMode = (id, label) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'room-mode-btn' + (roomMode === id ? ' active' : '');
+      b.textContent = label;
+      b.onclick = () => {
+        roomMode = id;
+        [...modeRow.querySelectorAll('.room-mode-btn')].forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+      };
+      return b;
+    };
+    modeRow.append(modeLbl, mkMode('', '普通对话'));
+    for (const m of extraModes) modeRow.append(mkMode(m.id, m.label));
+  }
   const status = document.createElement('p');
   status.className = 'novel-hint';
   status.style.margin = '8px 0 0';
@@ -977,12 +1005,15 @@ function createRoomModal() {
       await loadConvs(true);
       await selectConv(d.conversation.id);
       closeSidebarMobile();
+      if (roomMode) window.dispatchEvent(new CustomEvent('cngp:room-created', { detail: { conv: d.conversation, mode: roomMode } }));
     } catch (e) {
       save.disabled = false;
       status.textContent = e.message;
     }
   };
-  panel.append(heading, titleField, inviteField, status, save, cancel);
+  panel.append(heading, titleField, inviteField);
+  if (modeRow) panel.append(modeRow);
+  panel.append(status, save, cancel);
   overlay.appendChild(panel);
   root.appendChild(overlay);
   titleField.focus();
@@ -1401,7 +1432,10 @@ function pluginNovels() {
 }
 
 // ===== 插件管理页：侧栏「插件」入口，右侧整页设置 =====
-const PLUGIN_SCRIPTS = { 'novel-reader': '/plugins/novel-reader/novel.js?v=1.9.0' };
+const PLUGIN_SCRIPTS = {
+  'novel-reader': '/plugins/novel-reader/novel.js?v=1.9.0',
+  'turtle-soup': '/plugins/turtle-soup/soup.js?v=2.1.0',
+};
 function openPluginPage() {
   closeSidebarMobile();
   document.querySelector('.chat-head').classList.add('hidden');
@@ -1468,7 +1502,33 @@ function buildPluginCard(p) {
   };
   actions.appendChild(btnToggle);
   let details = null;
-  if (p.name === 'novel-reader') {
+  if (p.name === 'turtle-soup') {
+    const btnDetail = document.createElement('button'); btnDetail.type = 'button'; btnDetail.className = 'pp-btn ghost'; btnDetail.textContent = '查看详情';
+    details = document.createElement('div'); details.className = 'pp-details';
+    btnDetail.onclick = () => {
+      details.classList.toggle('open');
+      btnDetail.textContent = details.classList.contains('open') ? '收起详情' : '查看详情';
+    };
+    actions.appendChild(btnDetail);
+    const h = document.createElement('h4'); h.className = 'pp-details-title'; h.textContent = '玩法说明（群聊推理游戏）';
+    details.appendChild(h);
+    const steps = [
+      '开启插件后，左侧「Agent Team」点 + 创建群聊室，对话模式选「海龟汤」；',
+      '建房人即主持人：开局前选一个故事本（内置经典或自己上传），系统把谜面发到群里；',
+      '谜底只有主持人能看到。其他成员像正常聊天一样提问，主持人自由回应；',
+      '主持人可在成员消息下点快捷按钮回复「是 / 不是 / 是也不是 / 无关」；',
+      '主持人随时结束游戏并揭晓谜底，全员可见；伪装与普通聊天完全一致。',
+    ];
+    steps.forEach((t, i) => {
+      const row = document.createElement('div'); row.className = 'pp-step';
+      const n = document.createElement('span'); n.className = 'pp-step-num'; n.textContent = String(i + 1);
+      const txt = document.createElement('span'); txt.textContent = t;
+      row.append(n, txt); details.appendChild(row);
+    });
+    const note = document.createElement('p'); note.className = 'pp-note';
+    note.textContent = '在游戏面板也可以上传自己的故事本：谜底只有你能看到，别人可以拿它玩。';
+    details.appendChild(note);
+  } else if (p.name === 'novel-reader') {
     const btnDetail = document.createElement('button'); btnDetail.type = 'button'; btnDetail.className = 'pp-btn ghost'; btnDetail.textContent = '查看详情';
     details = document.createElement('div'); details.className = 'pp-details';
     btnDetail.onclick = () => {

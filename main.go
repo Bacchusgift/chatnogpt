@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"chatnogpt/plugins/novelreader"
+	"chatnogpt/plugins/turtlesoup"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -245,6 +246,24 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 				}
 			}
 			next(w, r.WithContext(novelreader.WithUser(r.Context(), u.ID)))
+		}
+	})
+	SoupPlugin := turtlesoup.New(turtlesoup.Config{DB: pluginDB, Dir: s.store.Dir()})
+	mux.HandleFunc("/plugins/turtle-soup/soup.js", SoupPlugin.FrontendJSHandler)
+	SoupPlugin.Register(mux, "/api/plugins/turtle-soup", func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			u := s.authUser(r)
+			if u == nil {
+				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+				return
+			}
+			for _, name := range u.DisabledPlugins {
+				if name == turtlesoup.Name {
+					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在侧栏「插件」页中开启"))
+					return
+				}
+			}
+			next(w, r.WithContext(turtlesoup.WithUser(r.Context(), u.ID)))
 		}
 	})
 	mux.HandleFunc("/api/plugins", s.handlePlugins)

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"chatnogpt/plugins/novelreader"
+	"chatnogpt/plugins/turtlesoup"
 	"io"
 	"log"
 	"net/http"
@@ -388,6 +389,7 @@ func (s *server) handleProjectSub(w http.ResponseWriter, r *http.Request) {
 // pluginCatalog 基座可感知的插件目录（与 plugins/ 目录一一对应）。
 var pluginCatalog = []struct{ Name, Title, Desc, Download string }{
 	{novelreader.Name, novelreader.Title, novelreader.Desc, "/downloads/fanqie-extension.zip"},
+	{turtlesoup.Name, turtlesoup.Title, turtlesoup.Desc, ""},
 }
 
 func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
