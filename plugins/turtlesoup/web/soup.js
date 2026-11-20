@@ -8,7 +8,7 @@
   const gs = { conv: null, game: null, timer: null };
 
   // 注册群聊创建模式（新建对话时可选：普通对话 / 海龟汤对话）
-  (window.cngpRoomModes = window.cngpRoomModes || []).push({ id: 'turtle-soup', label: '海龟汤' });
+  CNGP.roomMode({ id: 'turtle-soup', label: '海龟汤' });
 
   // ---- 样式 ----
   const style = document.createElement('style');
@@ -39,32 +39,34 @@
   document.head.appendChild(style);
 
   // ---- 工具 ----
-  function isSoupCandidate() { return state.curInfo && state.curInfo.kind === 1; }
-  function amHost() { return state.curInfo && state.curInfo.creator_id === state.me.id; }
-  function sendText(t) { if (typeof doSend === 'function') doSend({ text: t }); }
+  const ctx = () => CNGP.context();
+  const curConv = () => { const c = ctx().conv; return c ? c.id : null; };
+  function isSoupCandidate() { const c = ctx().conv; return c && c.kind === 1; }
+  function amHost() { const c = ctx().conv; return c && c.creator_id === ctx().me.id; }
+  function sendText(t) { CNGP.send(t); }
 
   // ---- 基座 hook：cngp:conv-opened（契约见 plugins/README.md） ----
-  window.addEventListener('cngp:conv-opened', e => {
+  CNGP.on('conv-opened', detail => {
     clearInterval(gs.timer); gs.timer = null;
-    tsOnConv(e.detail && e.detail.id);
+    tsOnConv(detail && detail.id);
   });
 
   function tsOnConv(id) {
     gs.conv = id; gs.game = null;
     tsRemovePanel();
-    if (!isSoupCandidate() || state.cur !== id) return;
+    if (!isSoupCandidate() || curConv() !== id) return;
     tsRefresh();
     gs.timer = setInterval(() => {
-      if (isSoupCandidate() && state.cur === gs.conv) tsRefresh();
+      if (isSoupCandidate() && curConv() === gs.conv) tsRefresh();
       else { clearInterval(gs.timer); gs.timer = null; }
     }, 15000);
   }
 
   async function tsRefresh() {
-    if (!isSoupCandidate() || !state.cur) return;
+    if (!isSoupCandidate() || !curConv()) return;
     let g = null;
     try {
-      const d = await api(API + '/games?conv_id=' + encodeURIComponent(state.cur));
+      const d = await CNGP.api(API + '/games?conv_id=' + encodeURIComponent(curConv()));
       g = d.game;
     } catch (e) { return; }
     gs.game = g;
@@ -77,7 +79,7 @@
 
   function tsRenderPanel() {
     const col = document.getElementById('messages');
-    if (!col || !isSoupCandidate() || state.curInfo == null) { tsRemovePanel(); return; }
+    if (!col || !isSoupCandidate()) { tsRemovePanel(); return; }
     let p = document.getElementById('tsPanel');
     if (!p) {
       p = document.createElement('div');
@@ -97,7 +99,7 @@
         : '等待主持人选故事本开始游戏。';
       if (amHost()) {
         const b = document.createElement('button'); b.type = 'button'; b.className = 'ts-btn primary'; b.textContent = '选择故事本';
-        b.onclick = () => tsOpenStoryPicker(state.cur);
+        b.onclick = () => tsOpenStoryPicker(curConv());
         row.appendChild(b);
       }
       p.append(tag, riddleEl, row);
@@ -107,20 +109,10 @@
     riddleEl.textContent = '谜面：' + gs.game.riddle;
     p.append(tag, riddleEl);
     if (gs.game.answer) {
-      // 谜底伪装：与消息同构的覆盖行（密文 + 悬停透视），跟随思考伪装开关，不明文展示
-      const arow = document.createElement('div');
-      arow.className = 'msg-ai covered ts-answer-row';
-      arow.style.margin = '10px 0 0';
-      const rw = document.createElement('div'); rw.className = 'real-wrap';
-      const abody = document.createElement('div'); abody.className = 'ai-body';
-      abody.textContent = '谜底：' + gs.game.answer;
-      rw.appendChild(abody); arow.appendChild(rw);
-      arow.dataset.msgKey = 'ts-ans-' + gs.game.story_id;   // 稳定密文
-      arow.dataset.nickname = '谜底';
-      arow.appendChild(makeCoverLayer(false));
-      coverTextInto(arow);
-      if (state.coverMode) { arow.classList.add('covered'); bindFlashlight(arow); }
-      p.appendChild(arow);
+      // 谜底伪装：CNGP.secureBlock 覆盖行（密文 + 悬停透视），跟随思考伪装开关
+      p.appendChild(CNGP.secureBlock('谜底：' + gs.game.answer, {
+        tag: '谜底', key: 'ts-ans-' + gs.game.story_id, className: 'ts-answer-row',
+      }));
     } else {
       const h = document.createElement('div'); h.className = 'ts-hint';
       h.textContent = gs.game.is_host
@@ -133,11 +125,11 @@
       end.onclick = async () => {
         end.disabled = true;
         try {
-          const d = await api(API + '/games/' + encodeURIComponent(state.cur) + '/end', { method: 'POST' });
+          const d = await CNGP.api(API + '/games/' + encodeURIComponent(curConv()) + '/end', { method: 'POST' });
           gs.game = d.game;
           sendText('谜底揭晓：' + gs.game.answer);
           tsRenderPanel();
-        } catch (e) { toast(e.message); end.disabled = false; }
+        } catch (e) { CNGP.toast(e.message); end.disabled = false; }
       };
       row.appendChild(end);
     }
@@ -158,8 +150,8 @@
     upBtn.onclick = async () => {
       upBtn.disabled = true; status.textContent = '';
       try {
-        await api(API + '/stories', { body: { riddle: riddle.value.trim(), answer: answer.value.trim() } });
-        toast('故事本已上传');
+        await CNGP.api(API + '/stories', { body: { riddle: riddle.value.trim(), answer: answer.value.trim() } });
+        CNGP.toast('故事本已上传');
         riddle.value = ''; answer.value = '';
         await fillList();
       } catch (e) { status.textContent = e.message; }
@@ -171,7 +163,7 @@
       const loading = document.createElement('div'); loading.className = 'ts-story'; loading.textContent = '加载中…';
       list.appendChild(loading);
       let stories = [];
-      try { stories = (await api(API + '/stories')).stories || []; }
+      try { stories = (await CNGP.api(API + '/stories')).stories || []; }
       catch (e) { loading.textContent = '加载失败：' + e.message; return; }
       list.replaceChildren();
       if (!stories.length) { list.textContent = '暂无故事本'; return; }
@@ -182,19 +174,19 @@
         const tag = document.createElement('span'); tag.textContent = s.system ? '内置' : (s.mine ? '我上传的' : '他人上传');
         const del = document.createElement('button'); del.type = 'button'; del.className = 'ts-btn'; del.textContent = '删除';
         del.onclick = async () => {
-          try { await api(API + '/stories/' + encodeURIComponent(s.id), { method: 'DELETE' }); await fillList(); }
-          catch (e) { toast(e.message); }
+          try { await CNGP.api(API + '/stories/' + encodeURIComponent(s.id), { method: 'DELETE' }); await fillList(); }
+          catch (e) { CNGP.toast(e.message); }
         };
         const pick = document.createElement('button'); pick.type = 'button'; pick.className = 'ts-btn primary pick'; pick.textContent = '用它开局';
         pick.onclick = async () => {
           pick.disabled = true;
           try {
-            const d = await api(API + '/games', { body: { conv_id: convID || state.cur, story_id: s.id } });
+            const d = await CNGP.api(API + '/games', { body: { conv_id: convID || curConv(), story_id: s.id } });
             gs.game = d.game;
             close();
             sendText('🍲 海龟汤开锅！谜面：\n' + d.game.riddle + '\n（主持人已拿到谜底，大家开始提问吧）');
             tsRenderPanel();
-          } catch (e) { toast(e.message); pick.disabled = false; }
+          } catch (e) { CNGP.toast(e.message); pick.disabled = false; }
         };
         meta.append(tag);
         if (s.mine) meta.append(del);
@@ -210,11 +202,11 @@
   window.tsOpenStoryPicker = tsOpenStoryPicker;
 
   // 新建房间时选择了海龟汤模式：进入房间自动打开选本
-  window.addEventListener('cngp:room-created', e => {
-    if (e.detail && e.detail.mode === 'turtle-soup' && typeof state !== 'undefined'
-        && state.me && e.detail.conv && e.detail.conv.creator_id === state.me.id) {
-      tsOnConv(e.detail.conv.id);
-      tsOpenStoryPicker(e.detail.conv.id);
+  CNGP.on('room-created', detail => {
+    if (detail && detail.mode === 'turtle-soup' && detail.conv
+        && ctx().me && detail.conv.creator_id === ctx().me.id) {
+      tsOnConv(detail.conv.id);
+      tsOpenStoryPicker(detail.conv.id);
     }
   });
 
@@ -236,7 +228,8 @@
     // 摘掉原点赞/点踩（位置与形态保留，语义变为快捷裁决），保留复制/刷新
     actions.querySelectorAll('button[aria-pressed]').forEach(b => b.remove());
     for (const q of TS_QUICKS) {
-      const b = makeMessageAction(q.label, q.icon);
+      const b = document.createElement('button');
+      b.type = 'button'; b.title = q.label; b.setAttribute('aria-label', q.label); b.innerHTML = q.icon;
       b.className = 'ts-quick' + (q.down ? ' thumb-down' : '');
       b.onclick = () => sendText(q.label);
       actions.appendChild(b);
@@ -249,7 +242,7 @@
     });
   }
   // ---- 基座 hook：cngp:message-actions（消息操作条渲染完成） ----
-  window.addEventListener('cngp:message-actions', e => {
-    try { tsAugmentActions(e.detail.row); } catch (err) { }
+  CNGP.on('message-actions', detail => {
+    try { tsAugmentActions(detail.row); } catch (err) { }
   });
 })();

@@ -2674,3 +2674,58 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+
+/* ---------- CNGP 插件门面：插件开发唯一依赖的稳定 API（契约见 plugins/README.md） ---------- */
+window.CNGP = {
+  version: 2,
+  // 带鉴权的 HTTP 调用
+  api: (path, opts) => api(path, opts),
+  // 轻提示
+  toast: msg => toast(msg),
+  // 向当前会话发送一条消息（走正常通道，伪装一致；视图不在会话时自动 REST 兜底投递）
+  send(text) {
+    const conv = state.cur;
+    if (!conv) { toast('请先选择一个会话'); return false; }
+    if (state.wsConv === conv && state.ws && state.ws.readyState === 1) {
+      doSend({ text });
+      return true;
+    }
+    const cmid = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+    api('/api/conversations/' + encodeURIComponent(conv) + '/send',
+      { body: { content: text, client_msg_id: cmid } }).catch(e => toast(e.message));
+    return true;
+  },
+  // 当前上下文只读快照：{ me, conv, coverMode }
+  context() {
+    return { me: state.me, conv: state.curInfo, coverMode: !!state.coverMode };
+  },
+  // 伪装块：返回一个跟随思考伪装开关的覆盖行元素（密文呈现、悬停透视），文本不明文
+  secureBlock(text, opts = {}) {
+    const row = document.createElement('div');
+    row.className = 'msg-ai covered' + (opts.className ? ' ' + opts.className : '');
+    const rw = document.createElement('div'); rw.className = 'real-wrap';
+    const body = document.createElement('div'); body.className = 'ai-body';
+    body.textContent = text;
+    rw.appendChild(body); row.appendChild(rw);
+    row.dataset.msgKey = opts.key || ('plug-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+    row.dataset.nickname = opts.tag || '密文';
+    row.appendChild(makeCoverLayer(false));
+    coverTextInto(row);
+    row.classList.add('covered');
+    bindFlashlight(row);
+    return row;
+  },
+  // 事件订阅：conv-opened / message-actions / room-created / plugins-loaded
+  on(name, fn) {
+    window.addEventListener('cngp:' + name, e => fn(e.detail, e));
+  },
+  // 贡献群聊对话模式
+  roomMode(mode) {
+    (window.cngpRoomModes = window.cngpRoomModes || []).push(mode);
+  },
+  // 样式化确认弹窗
+  confirm({ title, body, okText, danger, onOk }) {
+    openConfirm({ title, body, okText, danger, onOk });
+  },
+};

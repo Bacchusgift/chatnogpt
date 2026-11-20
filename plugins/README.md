@@ -46,17 +46,31 @@ type Plugin interface {
 
 ## 前端契约
 
-插件脚本是普通 `<script>`（非模块），加载后可用的基座全局：`api(path, opts)`、
-`state`（当前用户/会话）、`toast(msg)`、`doSend({text, imageID})`。脚本应自注册
-（IIFE + 顶层守卫 `window.__<name>Loaded`），**禁止 monkey-patch 基座函数**，统一用
-以下 hook：
+插件脚本是普通 `<script>`（非模块）。**插件只依赖 `window.CNGP` 门面**（稳定契约，
+基座内部重构不影响插件），脚本自注册（IIFE + 顶层守卫 `window.__<name>Loaded`），
+**禁止直接读写基座内部（state / 内部函数 / DOM 结构约定）与 monkey-patch**。
 
-| Hook | 类型 | 说明 |
+### CNGP 门面 API
+
+| 成员 | 说明 |
+|---|---|
+| `CNGP.api(path, opts)` | 带鉴权的 HTTP 调用 |
+| `CNGP.send(text)` | 向当前会话发消息（走正常通道，伪装一致；视图不在会话时自动 REST 兜底） |
+| `CNGP.toast(msg)` | 轻提示 |
+| `CNGP.confirm({title, body, okText, danger, onOk})` | 样式化确认弹窗 |
+| `CNGP.context()` | 当前上下文只读快照 `{me, conv, coverMode}` |
+| `CNGP.secureBlock(text, {tag, key, className})` | 伪装块：跟随思考伪装开关的密文覆盖行（悬停透视），秘密内容专用，**不得明文** |
+| `CNGP.on(name, fn)` | 订阅 hook 事件（见下表） |
+| `CNGP.roomMode({id, label})` | 贡献群聊对话模式 |
+
+### Hook 事件（经 `CNGP.on` 订阅）
+
+| 事件 | detail | 说明 |
 |---|---|---|
-| `cngp:conv-opened` | CustomEvent `{id, conv}` | 会话打开/切换并渲染完成 |
-| `cngp:message-actions` | CustomEvent `{row, actions, content}` | 他人消息操作条渲染完成，可追加按钮 |
-| `cngp:room-created` | CustomEvent `{conv, mode}` | 群聊室创建完成（带所选对话模式） |
-| `cngp:plugins-loaded` | CustomEvent | 全部启用插件脚本注入完成 |
+| `conv-opened` | `{id, conv}` | 会话打开/切换并渲染完成 |
+| `message-actions` | `{row, actions, content}` | 他人消息操作条渲染完成，可追加按钮 |
+| `room-created` | `{conv, mode}` | 群聊室创建完成（带所选对话模式） |
+| `plugins-loaded` | 无 | 全部启用插件脚本注入完成 |
 | `window.cngpRoomModes` | 数组 | 插件加载时 push `{id, label}` 贡献对话模式 |
 
 示例（soup.js 摘录）：
