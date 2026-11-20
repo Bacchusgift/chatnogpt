@@ -423,6 +423,7 @@ function showApp() {
     appendWelcome('ChatNoGPT');
   }
   if (state.coverMode) ensureCoverPool();
+  loadProjects();
   loadConvs();
   ensurePluginScript('novel-reader', '/plugins/novel-reader/novel.js?v=1.9.0')
     .then(() => { if (typeof novelLoad === 'function') novelLoad(); });
@@ -689,36 +690,162 @@ function timeScrollToMessage(mid) {
   }, 100);
 }
 
+function convButton(c) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
+  b.dataset.id = c.id;
+  b.textContent = c.title;
+  if (c.unread_count > 0) b.appendChild(unreadBadgeEl(c.unread_count));
+  b.title = c.title + '（双击修改标题）';
+  b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
+  b.ondblclick = () => renameConv(c.id, c.title);
+  if (c.kind !== 1) {
+    b.draggable = true;
+    b.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/chat-id', c.id);
+      e.dataTransfer.effectAllowed = 'move';
+      draggingConvID = c.id;
+      b.classList.add('dragging');
+    });
+    b.addEventListener('dragend', () => b.classList.remove('dragging'));
+  }
+  return b;
+}
+
+function convEntry(list, c) {
+  const archived = archivedConvs();
+  const b = convButton(c);
+  appendConversationListItem(list, b, c.id);
+  void archived;
+}
+
+function sectionHeader(label, extra) {
+  const head = document.createElement('div');
+  head.className = 'side-section-head';
+  const name = document.createElement('span');
+  name.className = 'side-section-label';
+  name.textContent = label;
+  head.append(name);
+  if (extra) head.appendChild(extra);
+  return head;
+}
+
 function renderConvList() {
   const list = $('#convList');
   list.innerHTML = '';
-  if (!state.convs.length && pluginNovels().length) {
-    const p = document.createElement('div');
-    p.className = 'conv-empty';
-    p.textContent = '还没有聊天';
-    list.appendChild(p);
-    return;
-  }
   const archived = archivedConvs();
+  const rooms = state.convs.filter(c => c.kind === 1);
+  const normal = state.convs.filter(c => c.kind !== 1);
+  const projects = state.projects || [];
+  const grouped = new Map(projects.map(p => [p.id, []]));
+  const loose = [];
+  for (const c of normal) {
+    if (archived.has(c.id)) continue;
+    if (c.project_id && grouped.has(c.project_id)) grouped.get(c.project_id).push(c);
+    else loose.push(c);
+  }
+  // Agent Team 区（群聊室）
+  const teamHead = sectionHeader('Agent Team');
+  const teamNew = document.createElement('button');
+  teamNew.type = 'button'; teamNew.className = 'side-section-add'; teamNew.textContent = '＋';
+  teamNew.title = '创建群聊室'; teamNew.onclick = createRoomModal;
+  teamHead.appendChild(teamNew);
+  list.appendChild(teamHead);
+  if (rooms.length) for (const r of rooms) {
+    const b = convButton(r);
+    b.classList.add('room-item');
+    if (r.unread_count > 0) b.appendChild(unreadBadgeEl(r.unread_count));
+    list.appendChild(b);
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'conv-empty';
+    empty.textContent = '暂无群聊室';
+    list.appendChild(empty);
+  }
+  // 项目分组区
+  const projHead = sectionHeader('项目');
+  const projNew = document.createElement('button');
+  projNew.type = 'button'; projNew.className = 'side-section-add'; projNew.textContent = '＋';
+  projNew.title = '新建项目'; projNew.onclick = createProjectModal;
+  projHead.appendChild(projNew);
+  list.appendChild(projHead);
+  if (projects.length) for (const p of projects) {
+    const det = document.createElement('details');
+    det.className = 'proj-group'; det.open = true;
+    det.dataset.pid = p.id;
+    const sum = document.createElement('summary');
+    sum.textContent = p.name;
+    sum.title = p.name + '（双击重命名 · 拖入会话归类）';
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'proj-del'; del.textContent = '✕';
+    del.title = '删除项目（会话保留，移出分组）';
+    del.onclick = async e => {
+      e.stopPropagation(); e.preventDefault();
+      if (!confirm('删除项目「' + p.name + '」？会话将移出分组。')) return;
+      try { await api('/api/projects/' + encodeURIComponent(p.id), { method: 'DELETE' }); await refreshProjectsAndConvs(); }
+      catch (err) { toast(err.message); }
+    };
+    sum.appendChild(del);
+    det.addEventListener('dragover', e => { e.preventDefault(); det.classList.add('drag-over'); });
+    det.addEventListener('dragleave', () => det.classList.remove('drag-over'));
+    det.addEventListener('drop', async e => {
+      const cid = draggingConvID || e.dataTransfer.getData('text/chat-id');
+      if (!cid) return;
+      try { await api('/api/conversations/' + encodeURIComponent(cid) + '/project', { body: { project_id: p.id } }); await refreshProjectsAndConvs(); }
+      catch (err) { toast(err.message); }
+    });
+    det.append(sum);
+    for (const c of grouped.get(p.id) || []) {
+      const entry = document.createElement('div'); entry.className = 'conv-entry';
+      const b = convButton(c);
+      entry.appendChild(b);
+      det.appendChild(entry);
+    }
+    list.appendChild(det);
+  }
+  // 未分组普通会话
+  for (const c of loose) convEntry(list, c);
+  // 归档切换
   const toggle = document.createElement('button');
   toggle.type = 'button'; toggle.className = 'archive-toggle';
   toggle.textContent = showArchivedConvs ? '返回会话' : `归档 (${archived.size})`;
   toggle.onclick = () => { showArchivedConvs = !showArchivedConvs; renderConvList(); };
   list.appendChild(toggle);
-  for (const c of state.convs) {
-    if (archived.has(c.id) !== showArchivedConvs) continue;
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'conv-item' + (c.id === state.cur ? ' active' : '');
-    b.dataset.id = c.id;
-    b.textContent = c.title;
-    if (c.unread_count > 0) b.appendChild(unreadBadgeEl(c.unread_count));
-    b.title = c.title + '（双击修改标题）';
-    b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
-    b.ondblclick = () => renameConv(c.id, c.title);
-    appendConversationListItem(list, b, c.id);
-  }
   if (typeof novelRenderList === 'function') novelRenderList(list);
+}
+
+async function refreshProjectsAndConvs() {
+  await loadConvs(true);
+  await loadProjects();
+  renderConvList();
+}
+
+async function loadProjects() {
+  try {
+    const d = await api('/api/projects');
+    state.projects = d.projects || [];
+  } catch {}
+}
+
+function createProjectModal() {
+  const { panel, cancel, close } = openPicker('新建项目');
+  const field = document.createElement('input');
+  field.placeholder = '项目名称';
+  field.maxLength = 60;
+  const save = document.createElement('button');
+  save.textContent = '创建';
+  save.onclick = async () => {
+    try {
+      const d = await api('/api/projects', { body: { name: field.value } });
+      close();
+      await loadProjects(); renderConvList();
+    } catch (e) { toast(e.message); }
+  };
+  field.onkeydown = e => { if (e.key === 'Enter') save.click(); };
+  panel.insertBefore(field, cancel);
+  panel.insertBefore(save, cancel);
+  field.focus();
 }
 
 function appendConversationListItem(list, button, id) {
@@ -912,6 +1039,32 @@ async function selectConv(id) {
     // 打开某个聊天 = 选中了对方那个“模型”
     if (d.conversation.peer_id) {
       setTarget({ id: d.conversation.peer_id, name: d.conversation.peer_nickname });
+    } else if (d.conversation.kind === 1) {
+      // 群聊室：composer 显示全部成员模型名，超长省略号，点击查看完整列表
+      state.target = null;
+      const names = (d.conversation.members || [])
+        .map(m => m.nickname)
+        .filter(n => n && n !== state.me.nickname);
+      const label = names.length > 2 ? names.slice(0, 2).join(', ') + '…' : names.join(', ');
+      $('#modelLabel').textContent = label || '群聊';
+      $('#modelBtn').style.display = 'flex';
+      $('#modelBtn').title = '成员：' + (names.join('、') || '群聊');
+      $('#modelBtn').onclick = e => {
+        e.stopPropagation();
+        const { panel, cancel, close } = openPicker('群聊成员 · ' + d.conversation.member_count + ' 人');
+        const self = document.createElement('button');
+        self.type = 'button'; self.className = 'model-item';
+        const meName = document.createElement('div'); meName.className = 'm-name'; meName.textContent = state.me.nickname + '（我）';
+        self.append(meName); panel.insertBefore(self, cancel);
+        for (const m of d.conversation.members || []) {
+          if (m.id === state.me.id) continue;
+          const item = document.createElement('button');
+          item.type = 'button'; item.className = 'model-item';
+          const nm = document.createElement('div'); nm.className = 'm-name'; nm.textContent = m.nickname;
+          item.append(nm); panel.insertBefore(item, cancel);
+        }
+        void close;
+      };
     } else {
       // 兼容旧的多人聊天：隐藏选择器
       state.target = null;
@@ -1237,6 +1390,8 @@ function appendAIStatic(nickname, content, ts, msgId, imageID) {
   }
   addAIActions(r.row, content);
 }
+
+let draggingConvID = '';
 
 // pluginNovels 读取阅读插件模型列表（插件未加载时返回空数组）。
 function pluginNovels() {
@@ -1944,6 +2099,7 @@ function bind() {
       localStorage.setItem('cngp_token', d.token);
       state.me = d.user;
       state.enabledPlugins = d.plugins || [];
+      state.projects = [];
       askNotifyPermission();
       showApp();
     } catch (err) { $('#loginError').textContent = err.message; }

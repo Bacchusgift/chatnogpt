@@ -630,3 +630,37 @@ body.cover-on .msg-real.covered.flash::after {
 .novel-reader-progress .ai-label { margin-bottom: 5px; }
 .novel-reader-spinner { width: 16px; height: 16px; border: 2px solid #606060; border-top-color: #d6d6d6; border-radius: 50%; animation: novelReaderSpin .8s linear infinite; }
 @keyframes novelReaderSpin { to { transform: rotate(360deg); } }
+
+/* ---------- 侧栏分区：Agent Team / 项目分组 ---------- */
+.side-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px 4px; user-select: none;
+}
+.side-section-label { font-size: 11px; font-weight: 700; letter-spacing: .8px; color: #8e8e8e; }
+.side-section-add {
+  width: 20px; height: 20px; border-radius: 6px; flex: none;
+  color: #a8a8a8; font-size: 13px; line-height: 1;
+}
+.side-section-add:hover { background: rgba(255,255,255,.08); color: #ececec; }
+.proj-group { margin: 0 0 4px; }
+.proj-group > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px; font-size: 12.5px; font-weight: 600; color: #9fdcae;
+}
+.proj-group > summary::-webkit-details-marker { display: none; }
+.proj-group > summary::before {
+  content: '▸'; color: #8e8e8e; font-size: 10px; transition: transform .15s;
+}
+.proj-group[open] > summary::before { transform: rotate(90deg); }
+.proj-group > summary .proj-del {
+  margin-left: auto; color: #6e6e6e; font-size: 11px; padding: 2px 5px;
+  border-radius: 6px; opacity: 0; transition: opacity .15s;
+}
+.proj-group:hover > summary .proj-del { opacity: 1; }
+.proj-group > summary .proj-del:hover { color: #e07a7a; }
+.proj-group.drag-over > summary { background: rgba(120,200,150,.12); color: #bfe6cb; }
+.conv-entry { position: relative; }
+.proj-group .conv-entry .conv-item { padding-left: 24px; }
+.conv-item.room-item { color: #b7c9ff; }
+.conv-item.dragging { opacity: .45; }

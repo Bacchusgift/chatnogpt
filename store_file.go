@@ -29,6 +29,7 @@ type fileData struct {
 	ConvByCode   map[string]string       `json:"conv_by_code"`
 	Convs        map[string]*fileConv    `json:"convs"`
 	Images       map[string]imageRecord  `json:"images"`
+	Projects     map[string]*Project     `json:"projects,omitempty"`
 	CustomModels map[string]*CustomModel `json:"custom_models,omitempty"`
 }
 
@@ -49,6 +50,7 @@ func newFileStore(dir string) (*fileStore, error) {
 		Users: map[string]*User{}, ByName: map[string]string{}, ByNick: map[string]string{},
 		Tokens: map[string]string{}, ConvByCode: map[string]string{}, Convs: map[string]*fileConv{},
 		Images: map[string]imageRecord{}, CustomModels: map[string]*CustomModel{},
+		Projects: map[string]*Project{},
 	}}
 	b, err := os.ReadFile(fs.jsonPath())
 	if err == nil {
@@ -91,6 +93,7 @@ func (s *fileStore) Fresh() error {
 		Users: map[string]*User{}, ByName: map[string]string{}, ByNick: map[string]string{},
 		Tokens: map[string]string{}, ConvByCode: map[string]string{}, Convs: map[string]*fileConv{},
 		Images: map[string]imageRecord{}, CustomModels: map[string]*CustomModel{},
+		Projects: map[string]*Project{},
 	}
 	s.saveLocked()
 	return nil
@@ -353,7 +356,7 @@ func (s *fileStore) ListConvs(userID string) []convSummary {
 		out = append(out, convSummary{
 			ID: c.ID, Title: m.Title, Code: c.Code, Kind: c.Kind,
 			MemberCount: len(c.Members), CreatedAt: c.CreatedAt, LastTS: last, UnreadCount: m.UnreadCount, ArchivedAt: m.ArchivedAt,
-			PeerID: peerID, PeerNickname: peerNick,
+			PeerID: peerID, PeerNickname: peerNick, ProjectID: m.ProjectID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -829,6 +832,84 @@ func (s *fileStore) SetPluginDisabled(userID, plugin string, disabled bool) erro
 		out = append(out, plugin)
 	}
 	u.DisabledPlugins = out
+	s.saveLocked()
+	return nil
+}
+
+// ---- 项目分组（按用户独立的会话分组） ----
+
+func (s *fileStore) CreateProject(ownerID, name string) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := Project{ID: newID(), OwnerID: ownerID, Name: clampTitle(name), CreatedAt: now()}
+	if p.Name == "" {
+		p.Name = "新建项目"
+	}
+	s.d.Projects[p.ID] = &p
+	s.saveLocked()
+	return p, nil
+}
+
+func (s *fileStore) ListProjects(ownerID string) []Project {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Project{}
+	for _, p := range s.d.Projects {
+		if p.OwnerID == ownerID {
+			out = append(out, *p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt < out[j].CreatedAt })
+	return out
+}
+
+func (s *fileStore) RenameProject(userID, projectID, name string) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.d.Projects[projectID]
+	if p == nil || p.OwnerID != userID {
+		return Project{}, ErrNotFound
+	}
+	p.Name = strings.TrimSpace(name)
+	s.saveLocked()
+	return *p, nil
+}
+
+func (s *fileStore) DeleteProject(userID, projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.d.Projects[projectID]
+	if p == nil || p.OwnerID != userID {
+		return ErrNotFound
+	}
+	delete(s.d.Projects, projectID)
+	for _, c := range s.d.Convs {
+		if cm := c.Members[userID]; cm != nil && cm.ProjectID == projectID {
+			cm.ProjectID = ""
+		}
+	}
+	s.saveLocked()
+	return nil
+}
+
+func (s *fileStore) SetConvProject(convID, userID, projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return ErrNotFound
+	}
+	cm := c.Members[userID]
+	if cm == nil {
+		return ErrForbidden
+	}
+	if projectID != "" {
+		p := s.d.Projects[projectID]
+		if p == nil || p.OwnerID != userID {
+			return ErrNotFound
+		}
+	}
+	cm.ProjectID = projectID
 	s.saveLocked()
 	return nil
 }

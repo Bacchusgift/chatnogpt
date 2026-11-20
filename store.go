@@ -33,10 +33,18 @@ type User struct {
 type Member struct {
 	UserID      string `json:"user_id"`
 	Title       string `json:"title"` // 每个成员给会话自己取的名字
+	ProjectID   string `json:"project_id,omitempty"`
 	JoinedAt    int64  `json:"joined_at"`
 	UnreadCount int    `json:"unread_count,omitempty"`
 	ArchivedAt  int64  `json:"archived_at,omitempty"`
 	DeletedAt   int64  `json:"deleted_at,omitempty"`
+}
+
+type Project struct {
+	ID        string `json:"id"`
+	OwnerID   string `json:"owner_id"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 const recalledMessageText = "消息已撤回"
@@ -80,6 +88,7 @@ type convSummary struct {
 	ArchivedAt   int64  `json:"archived_at,omitempty"`
 	PeerID       string `json:"peer_id,omitempty"`
 	PeerNickname string `json:"peer_nickname,omitempty"`
+	ProjectID    string `json:"project_id,omitempty"`
 }
 
 type publicMember struct {
@@ -162,6 +171,11 @@ type Store interface {
 	RoomMembers(convID, userID string) ([]string, error)
 	SetPluginDisabled(userID, plugin string, disabled bool) error
 	SearchMessages(userID, query string, limit int) ([]SearchHit, error)
+	CreateProject(ownerID, name string) (Project, error)
+	ListProjects(ownerID string) []Project
+	RenameProject(userID, projectID, name string) (Project, error)
+	DeleteProject(userID, projectID string) error
+	SetConvProject(convID, userID, projectID string) error
 	Fresh() error
 	Close() error
 	Dir() string

@@ -49,9 +49,17 @@ CREATE TABLE IF NOT EXISTS convs (
   created_ns BIGINT NOT NULL DEFAULT 0,
   kind TINYINT NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS projects (
+  id CHAR(12) PRIMARY KEY,
+  owner_id CHAR(12) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  created_at BIGINT NOT NULL,
+  KEY idx_projects_owner (owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE IF NOT EXISTS conv_members (
   conv_id CHAR(12) NOT NULL,
   user_id CHAR(12) NOT NULL,
+  project_id CHAR(12) NOT NULL DEFAULT '',
   title VARCHAR(120) NOT NULL DEFAULT '',
   joined_at BIGINT NOT NULL,
   unread_count INT NOT NULL DEFAULT 0,
@@ -122,6 +130,10 @@ func newDBStore(dsn, dir string) (*dbStore, error) {
 	if _, err := db.Exec("ALTER TABLE users ADD COLUMN disabled_plugins TEXT NULL"); err != nil && sqlErrCode(err) != 1060 {
 		db.Close()
 		return nil, fmt.Errorf("初始化插件开关: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN project_id CHAR(12) NOT NULL DEFAULT ''"); err != nil && sqlErrCode(err) != 1060 {
+		db.Close()
+		return nil, fmt.Errorf("初始化项目分组: %w", err)
 	}
 	for _, column := range []string{"archived_at", "deleted_at"} {
 		if _, err := db.Exec("ALTER TABLE conv_members ADD COLUMN " + column + " BIGINT NOT NULL DEFAULT 0"); err != nil && sqlErrCode(err) != 1060 {
@@ -428,7 +440,7 @@ func (s *dbStore) peerOf(convID, userID string, memberCount int) (string, string
 
 func (s *dbStore) ListConvs(userID string) []convSummary {
 	_ = s.PurgeExpiredArchives()
-	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at, cm.unread_count,
+	rows, err := s.db.Query(`SELECT c.id, cm.title, c.code, c.kind, c.created_at, cm.unread_count, cm.project_id,
 		COALESCE((SELECT MAX(m.ts) FROM messages m WHERE m.conv_id=c.id), 0) AS last_ts,
 		(SELECT COUNT(*) FROM conv_members x WHERE x.conv_id=c.id) AS member_count, cm.archived_at
 		FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? AND cm.deleted_at=0`, userID)
@@ -442,14 +454,15 @@ func (s *dbStore) ListConvs(userID string) []convSummary {
 		kind                          int
 		createdAt, lastTS, archivedAt int64
 		memberCount, unreadCount      int
+		projectID                     string
 	}
 	for rows.Next() {
 		var r row0
-		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.unreadCount, &r.lastTS, &r.memberCount, &r.archivedAt); err != nil {
+		if err := rows.Scan(&r.id, &r.title, &r.code, &r.kind, &r.createdAt, &r.unreadCount, &r.projectID, &r.lastTS, &r.memberCount, &r.archivedAt); err != nil {
 			continue
 		}
 		out = append(out, convSummary{ID: r.id, Title: r.title, Code: r.code, Kind: r.kind,
-			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS, UnreadCount: r.unreadCount, ArchivedAt: r.archivedAt})
+			MemberCount: r.memberCount, CreatedAt: r.createdAt, LastTS: r.lastTS, UnreadCount: r.unreadCount, ArchivedAt: r.archivedAt, ProjectID: r.projectID})
 	}
 	for i := range out {
 		out[i].PeerID, out[i].PeerNickname = s.peerOf(out[i].ID, userID, out[i].MemberCount)
@@ -926,6 +939,80 @@ func decodeDisabled(s sql.NullString) []string {
 }
 
 // SetPluginDisabled 按用户记录插件停用集合（JSON 文本存于 users 行）。
+// ---- 项目分组（按用户独立的会话分组） ----
+
+func (s *dbStore) CreateProject(ownerID, name string) (Project, error) {
+	p := Project{ID: newID(), OwnerID: ownerID, Name: clampTitle(name), CreatedAt: now()}
+	if p.Name == "" {
+		p.Name = "新建项目"
+	}
+	_, err := s.db.Exec("INSERT INTO projects (id, owner_id, name, created_at) VALUES (?,?,?,?)",
+		p.ID, p.OwnerID, p.Name, p.CreatedAt)
+	return p, err
+}
+
+func (s *dbStore) ListProjects(ownerID string) []Project {
+	rows, err := s.db.Query("SELECT id, owner_id, name, created_at FROM projects WHERE owner_id=? ORDER BY created_at", ownerID)
+	if err != nil {
+		return []Project{}
+	}
+	defer rows.Close()
+	out := []Project{}
+	for rows.Next() {
+		var p Project
+		if rows.Scan(&p.ID, &p.OwnerID, &p.Name, &p.CreatedAt) == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *dbStore) RenameProject(userID, projectID, name string) (Project, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len([]rune(name)) > 60 {
+		return Project{}, errors.New("项目名需为 1-60 个字符")
+	}
+	res, err := s.db.Exec("UPDATE projects SET name=? WHERE id=? AND owner_id=?", name, projectID, userID)
+	if err != nil {
+		return Project{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Project{}, ErrNotFound
+	}
+	var p Project
+	err = s.db.QueryRow("SELECT id, owner_id, name, created_at FROM projects WHERE id=?", projectID).
+		Scan(&p.ID, &p.OwnerID, &p.Name, &p.CreatedAt)
+	return p, err
+}
+
+func (s *dbStore) DeleteProject(userID, projectID string) error {
+	if _, err := s.db.Exec("UPDATE conv_members SET project_id='' WHERE user_id=? AND project_id=?", userID, projectID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec("DELETE FROM projects WHERE id=? AND owner_id=?", projectID, userID)
+	return err
+}
+
+func (s *dbStore) SetConvProject(convID, userID, projectID string) error {
+	if projectID != "" {
+		var owner string
+		if err := s.db.QueryRow("SELECT owner_id FROM projects WHERE id=?", projectID).Scan(&owner); err != nil {
+			return ErrNotFound
+		}
+		if owner != userID {
+			return ErrForbidden
+		}
+	}
+	res, err := s.db.Exec("UPDATE conv_members SET project_id=? WHERE conv_id=? AND user_id=?", projectID, convID, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrForbidden
+	}
+	return nil
+}
+
 func (s *dbStore) SetPluginDisabled(userID, plugin string, disabled bool) error {
 	var cur sql.NullString
 	if err := s.db.QueryRow("SELECT COALESCE(disabled_plugins,'') FROM users WHERE id=?", userID).Scan(&cur); err != nil {

@@ -375,13 +375,13 @@ func (p *Plugin) handleModelSub(w http.ResponseWriter, r *http.Request) {
 	owner := userIDFrom(r.Context())
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, Prefix+"/"), "/")
 	parts := strings.Split(rest, "/")
-	if len(parts) != 2 {
-		http.NotFound(w, r)
-		return
-	}
 	if len(parts) == 1 {
 		// /models：集合级列表与创建（GET/POST）
 		p.handleModels(w, r)
+		return
+	}
+	if len(parts) != 2 {
+		http.NotFound(w, r)
 		return
 	}
 	modelID, action := parts[0], parts[1]

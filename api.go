@@ -6,6 +6,7 @@ import (
 
 	"chatnogpt/plugins/novelreader"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,7 +136,8 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 			enabled = append(enabled, p.Name)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": publicUserOf(u), "plugins": enabled})
+	projects := s.store.ListProjects(u.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"user": publicUserOf(u), "plugins": enabled, "projects": projects})
 }
 
 func (s *server) handleConversations(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +318,73 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 }
 
+// ---- 项目分组 ----
+
+func (s *server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"projects": s.store.ListProjects(u.ID)})
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		p, err := s.store.CreateProject(u.ID, req.Name)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"project": p})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
+
+func (s *server) handleProjectSub(w http.ResponseWriter, r *http.Request) {
+	u := s.authUser(r)
+	if u == nil {
+		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/projects/"), "/"), "/")
+	if len(parts) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		p, err := s.store.RenameProject(u.ID, parts[0], req.Name)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"project": p})
+	case http.MethodDelete:
+		if err := s.store.DeleteProject(u.ID, parts[0]); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
+
 // pluginCatalog 基座可感知的插件目录（与 plugins/ 目录一一对应）。
 var pluginCatalog = []struct{ Name, Title, Desc string }{
 	{novelreader.Name, novelreader.Title, novelreader.Desc},
@@ -425,6 +494,20 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
+	case len(parts) == 2 && parts[1] == "project" && r.Method == http.MethodPut:
+		log.Println("DEBUG conv project case:", convID, u.ID)
+		var req struct {
+			ProjectID string `json:"project_id"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.store.SetConvProject(convID, u.ID, req.ProjectID); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet:
 		afterTS, _ := strconv.ParseInt(r.URL.Query().Get("after_ts"), 10, 64)
 		beforeTS, _ := strconv.ParseInt(r.URL.Query().Get("before_ts"), 10, 64)
