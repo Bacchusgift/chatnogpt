@@ -4,6 +4,8 @@
 (function () {
   if (window.__tsLoaded) return;
   window.__tsLoaded = true;
+  // 降级守卫：基座过旧（无 CNGP 门面或缺成员）时静默退出，不影响普通聊天
+  if (!window.CNGP || !CNGP.actions || !CNGP.drawer || !CNGP.api || !CNGP.send) return;
   const API = '/api/plugins/turtle-soup';
   const gs = { conv: null, game: null, timer: null };
 

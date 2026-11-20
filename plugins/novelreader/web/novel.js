@@ -1,5 +1,8 @@
 'use strict';
 
+// 降级守卫：基座过旧（无 CNGP 门面）时静默退出，不影响普通聊天
+if (!window.CNGP || !CNGP.api) { window.__novelDegraded = true; }
+
 // 浏览器扩展只读取来源网站上当前可阅读的章节。登录凭据始终留在来源网站。
 let novelModels = [];
 let novelHistory = {};
@@ -713,4 +716,4 @@ function novelCreateModal() {
 }
 
 // 插件自初始化：脚本由基座按启用目录注入，加载完成即渲染阅读模型入口
-novelLoad().catch(() => { });
+if (!window.__novelDegraded) novelLoad().catch(() => { });
