@@ -2397,36 +2397,31 @@ async function send() {
   }
   const targetID = state.target ? state.target.id : '';
   const initialConv = state.cur;
+  const initialInfo = state.curInfo;
+  const initialRoom = room;
   state.sending = true;
   btnSend.disabled = true;
   try {
     const imageID = attachment ? await uploadImage(attachment.blob) : '';
-    if (state.cur !== initialConv || state.target?.id !== targetID) {
-      throw new Error('发送期间切换了会话，请重新发送');
-    }
-    const payload = { text, imageID };
-    if (room || (state.cur && state.curInfo?.peer_id === targetID)) {
-      if (state.wsConv === state.cur && state.ws?.readyState === 1) doSend(payload);
-      else state.pendingSend = { convID: state.cur, payload };
-    } else {
+    // 发送期间无论怎么切换会话，消息都投递到原会话；不打断、不要求重发
+    let destConv = initialConv;
+    if (!initialRoom && !(initialInfo && initialInfo.peer_id === targetID)) {
       const d = await api('/api/conversations/with', { body: { peer_id: targetID } });
-      if (state.cur !== initialConv || state.target?.id !== targetID) {
-        throw new Error('发送期间切换了会话，请重新发送');
-      }
-      state.pendingSend = { convID: d.conversation.id, payload };
-      if (d.conversation.id === state.cur) flushPending(d.conversation.id);
-      else {
-        await selectConv(d.conversation.id);
-        if (state.cur !== d.conversation.id) throw new Error('会话已切换，请重新发送');
-        await loadConvs(true);
-      }
+      destConv = d.conversation.id;
     }
-    input.value = '';
-    autoGrow();
+    if (state.cur === destConv && state.wsConv === destConv && state.ws?.readyState === 1) {
+      doSend({ text, imageID });
+    } else {
+      const cmid = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+      await api('/api/conversations/' + encodeURIComponent(destConv) + '/send',
+        { body: { content: text, image_id: imageID, client_msg_id: cmid } });
+      if (state.cur !== destConv) loadConvs(true).catch(() => {});
+    }
+    if (input.value === text) { input.value = ''; autoGrow(); }
     if (attachment === state.attachment) removeAttachment();
   } catch (e) {
-    if (state.pendingSend?.payload?.text === text) state.pendingSend = null;
     toast(e.message);
+    if (!input.value.trim()) { input.value = text; autoGrow(); }
   } finally { state.sending = false; updateSendButton(); }
 }
 

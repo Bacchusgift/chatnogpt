@@ -518,6 +518,40 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
+	case len(parts) == 2 && parts[1] == "send" && r.Method == http.MethodPost:
+		// REST 发送：视图不在目标会话时（如发送中途切换）也能可靠投递，与 WS 通道同源落库广播
+		var req struct {
+			Content     string `json:"content"`
+			ImageID     string `json:"image_id"`
+			ClientMsgID string `json:"client_msg_id"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		content := strings.TrimSpace(req.Content)
+		if (content == "" && req.ImageID == "") || len(content) > 6000 {
+			writeErr(w, http.StatusBadRequest, errors.New("消息内容为空或超过 6000 字"))
+			return
+		}
+		m, err := s.store.AddMessageWithImage(convID, u.ID, u.Nickname, content, req.ClientMsgID, req.ImageID)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"type":          "msg",
+			"id":            m.ID,
+			"conv_id":       convID,
+			"sender_id":     u.ID,
+			"nickname":      u.Nickname,
+			"content":       m.Content,
+			"image_id":      m.ImageID,
+			"ts":            m.TS,
+			"client_msg_id": req.ClientMsgID,
+		})
+		s.hub.broadcast(convID, payload, nil)
+		writeJSON(w, http.StatusOK, map[string]any{"message": m})
 	case len(parts) == 2 && parts[1] == "project" && r.Method == http.MethodPut:
 		log.Println("DEBUG conv project case:", convID, u.ID)
 		var req struct {

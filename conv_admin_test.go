@@ -176,6 +176,23 @@ func TestConvOwnershipLifecycle(t *testing.T) {
 	if code == 200 {
 		t.Fatal("non-member C could delete conv")
 	}
+
+	// REST 发送：成员可发（即使视图不在该会话）；非成员被拒
+	code, out = doJSON(t, "POST", ts.URL+"/api/conversations/"+convID+"/send", tokB,
+		map[string]any{"content": "切换期间的消息", "client_msg_id": "cmid-test-1"})
+	if code != 200 {
+		t.Fatalf("member REST send status = %d: %v", code, out)
+	}
+	code, out = doJSON(t, "POST", ts.URL+"/api/conversations/"+convID+"/send", tokC,
+		map[string]any{"content": "越权消息", "client_msg_id": "cmid-test-2"})
+	if code == 200 {
+		t.Fatal("non-member C could send via REST")
+	}
+	code, out = doJSON(t, "POST", ts.URL+"/api/conversations/"+convID+"/send", tokB,
+		map[string]any{"content": "", "client_msg_id": "cmid-test-3"})
+	if code == 200 {
+		t.Fatal("empty content accepted")
+	}
 }
 
 // 群聊退出：成员退出后失去访问权，房主与会话不受影响；房主也可退出。
