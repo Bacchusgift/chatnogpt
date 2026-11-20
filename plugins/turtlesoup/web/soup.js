@@ -26,9 +26,6 @@
 .ts-btn.primary { background: #fff; color: #0d0d0d; border-color: #fff; font-weight: 600; }
 .ts-btn.primary:hover { background: #e3e3e3; }
 .ts-btn:hover { background: rgba(255,255,255,.07); }
-.ts-quick { padding: 3px 10px !important; border-radius: 999px !important; font-size: 12.5px !important;
-  border: 1px solid rgba(255,184,107,.4) !important; color: #ffb86b !important; }
-.ts-quick:hover { background: rgba(255,184,107,.14) !important; }
 .ts-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; margin: 10px 0; }
 .ts-story { text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,.09); background: #232323; }
 .ts-story .r { color: #ddd; font-size: 13.5px; line-height: 1.6; }
@@ -211,16 +208,26 @@
   });
 
   // ---- 主持人快捷回复：在他人消息的操作条上注入 是/不是/是也不是/无关 ----
+  // 快捷回复：沿用点赞/点踩的图标按钮形态，功能变为发出对应裁决
+  const tsThumbIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M7 10v10H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h3Zm0 0 4-7a2 2 0 0 1 2-1c1.1 0 2 .9 2 2v5h4a3 3 0 0 1 2.9 3.8l-1.7 6A3 3 0 0 1 17.3 21H7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+  const tsBothIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5v17" stroke="currentColor" stroke-width="1.6"/></svg>';
+  const tsIrrelevantIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M5.8 5.8l12.4 12.4" stroke="currentColor" stroke-width="1.6"/></svg>';
+  const TS_QUICKS = [
+    { label: '是', icon: tsThumbIcon },
+    { label: '不是', icon: tsThumbIcon, down: true },
+    { label: '是也不是', icon: tsBothIcon },
+    { label: '无关', icon: tsIrrelevantIcon },
+  ];
   function tsAugmentActions(row) {
     if (!isSoupCandidate() || !gs.game || gs.game.phase !== 1 || !gs.game.is_host) return;
     const actions = row.querySelector('.msg-actions');
     if (!actions || actions.querySelector('.ts-quick')) return;
-    // 摘掉原点赞/点踩（语义换成快捷回复），保留复制/刷新
+    // 摘掉原点赞/点踩（位置与形态保留，语义变为快捷裁决），保留复制/刷新
     actions.querySelectorAll('button[aria-pressed]').forEach(b => b.remove());
-    for (const label of ['是', '不是', '是也不是', '无关']) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.className = 'ts-quick'; b.textContent = label; b.title = '快捷回复：' + label;
-      b.onclick = () => sendText(label);
+    for (const q of TS_QUICKS) {
+      const b = makeMessageAction(q.label, q.icon);
+      b.className = 'ts-quick' + (q.down ? ' thumb-down' : '');
+      b.onclick = () => sendText(q.label);
       actions.appendChild(b);
     }
   }
