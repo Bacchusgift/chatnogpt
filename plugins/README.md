@@ -71,7 +71,10 @@ window.addEventListener('cngp:room-created', e => { /* mode 匹配后开局 */ }
 ## 必须遵守的规则
 
 1. **伪装一致**：插件发出的消息必须走正常消息通道（`doSend` / `/send`），不得绕过
-   密文打字机、圆孔透视、通知伪装。
+   密文打字机、圆孔透视、通知伪装。插件 UI 里的秘密（谜底等）即使仅特定角色可见，
+   也**必须以伪装形态呈现**——复用基座覆盖行原语（`makeCoverLayer` / `coverTextInto`
+   / `bindFlashlight` + `.covered`），不得明文展示（例：海龟汤谜底仅主持人可见，
+   依然以密文 + 悬停透视渲染）。
 2. **隐私边界**：插件不得缓存消息内容到 localStorage / Service Worker；谜底等秘密
    只能存在服务端，按归属下发。
 3. **缓存版本化**：脚本 URL 必须带 `?v=x.y.z`，内容变更时插件自行 bump。
