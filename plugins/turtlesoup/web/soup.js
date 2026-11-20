@@ -53,7 +53,7 @@
 
   function tsOnConv(id) {
     gs.conv = id; gs.game = null;
-    tsRemovePanel();
+    CNGP.drawer.setPanel(null);
     if (!isSoupCandidate() || curConv() !== id) return;
     tsRefresh();
     gs.timer = setInterval(() => {
@@ -64,30 +64,30 @@
 
   async function tsRefresh() {
     if (!isSoupCandidate() || !curConv()) return;
-    let g = null;
+    let soup = false, g = null;
     try {
       const d = await CNGP.api(API + '/games?conv_id=' + encodeURIComponent(curConv()));
-      g = d.game;
+      soup = !!d.soup;
+      g = d.game || null;
     } catch (e) { return; }
     gs.game = g;
-    tsRenderPanel();
+    if (soup) {
+      CNGP.drawer.setPanel({ title: '海龟汤', render: el => tsRenderInto(el) });
+    } else {
+      CNGP.drawer.setPanel(null);
+    }
+    tsRescanActions();
     tsRescanActions();
   }
 
   // ---- 游戏面板 ----
-  function tsRemovePanel() { const p = document.getElementById('tsPanel'); if (p) p.remove(); }
 
-  function tsRenderPanel() {
-    const col = document.getElementById('messages');
-    if (!col || !isSoupCandidate()) { tsRemovePanel(); return; }
-    let p = document.getElementById('tsPanel');
-    if (!p) {
-      p = document.createElement('div');
-      p.id = 'tsPanel'; p.className = 'ts-panel';
-      const welcome = col.querySelector('.welcome');
-      if (welcome) col.insertBefore(p, welcome); else col.insertBefore(p, col.firstChild);
-    }
-    p.replaceChildren();
+  function tsRenderInto(el) {
+    el.replaceChildren();
+    const p = document.createElement('div');
+    p.id = 'tsPanel';
+    p.className = 'ts-panel';
+    el.appendChild(p);
     const tag = document.createElement('span'); tag.className = 'ts-tag';
     const riddleEl = document.createElement('div'); riddleEl.className = 'ts-riddle';
     const row = document.createElement('div'); row.className = 'ts-row';
@@ -128,7 +128,7 @@
           const d = await CNGP.api(API + '/games/' + encodeURIComponent(curConv()) + '/end', { method: 'POST' });
           gs.game = d.game;
           sendText('谜底揭晓：' + gs.game.answer);
-          tsRenderPanel();
+          CNGP.drawer.refresh();
         } catch (e) { CNGP.toast(e.message); end.disabled = false; }
       };
       row.appendChild(end);
@@ -185,7 +185,7 @@
             gs.game = d.game;
             close();
             sendText('🍲 海龟汤开锅！谜面：\n' + d.game.riddle + '\n（主持人已拿到谜底，大家开始提问吧）');
-            tsRenderPanel();
+            CNGP.drawer.refresh();
           } catch (e) { CNGP.toast(e.message); pick.disabled = false; }
         };
         meta.append(tag);
@@ -203,10 +203,11 @@
 
   // 新建房间时选择了海龟汤模式：进入房间自动打开选本
   CNGP.on('room-created', detail => {
-    if (detail && detail.mode === 'turtle-soup' && detail.conv
-        && ctx().me && detail.conv.creator_id === ctx().me.id) {
-      tsOnConv(detail.conv.id);
-      tsOpenStoryPicker(detail.conv.id);
+    if (detail && detail.mode === 'turtle-soup' && detail.conv) {
+      CNGP.api(API + '/rooms', { body: { conv_id: detail.conv.id } })
+        .then(() => { tsOnConv(detail.conv.id); })
+        .catch(() => {});
+      if (ctx().me && detail.conv.creator_id === ctx().me.id) tsOpenStoryPicker(detail.conv.id);
     }
   });
 

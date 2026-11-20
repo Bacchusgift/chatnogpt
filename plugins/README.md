@@ -62,6 +62,7 @@ type Plugin interface {
 | `CNGP.secureBlock(text, {tag, key, className})` | 伪装块：跟随思考伪装开关的密文覆盖行（悬停透视），秘密内容专用，**不得明文** |
 | `CNGP.on(name, fn)` | 订阅 hook 事件（见下表） |
 | `CNGP.roomMode({id, label})` | 贡献群聊对话模式 |
+| `CNGP.drawer.setPanel({title, render(el, ctx)})` | 右侧抽屉面板：当前会话命中时头部出现切换按钮、抽屉自动展开；面板刷新经 `CNGP.drawer.refresh()`；用户可收起（收起的会话内不再自动展开） |
 
 ### Hook 事件（经 `CNGP.on` 订阅）
 

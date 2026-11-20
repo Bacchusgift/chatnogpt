@@ -28,7 +28,7 @@ const (
 	Name       = "turtle-soup"
 	Title      = "海龟汤"
 	Desc       = "群聊海龟汤推理：主持人出题，玩家提问，快捷回复「是 / 不是 / 是也不是 / 无关」"
-	FrontendJS = "/plugins/turtle-soup/soup.js?v=2.3.6"
+	FrontendJS = "/plugins/turtle-soup/soup.js?v=2.3.10"
 )
 
 // WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。
@@ -155,6 +155,10 @@ func (p *Plugin) ensureSchema() {
 				started_at BIGINT NOT NULL,
 				ended_at BIGINT NOT NULL DEFAULT 0
 			)`,
+			`CREATE TABLE IF NOT EXISTS ts_rooms (
+				conv_id VARCHAR(24) PRIMARY KEY,
+				created_at BIGINT NOT NULL
+			)`,
 		}
 		for _, q := range stmts {
 			if _, err := p.cfg.DB.Exec(q); err != nil {
@@ -183,6 +187,7 @@ func (p *Plugin) ensureSchema() {
 type fileData struct {
 	Stories map[string]*Story `json:"stories"`
 	Games   map[string]*Game  `json:"games"`
+	Rooms   map[string]int64  `json:"rooms"`
 }
 
 func (p *Plugin) jsonPath() string {
@@ -213,6 +218,9 @@ func (p *Plugin) loadFile() (*fileData, error) {
 	}
 	if out.Games == nil {
 		out.Games = map[string]*Game{}
+	}
+	if out.Rooms == nil {
+		out.Rooms = map[string]int64{}
 	}
 	if len(out.Stories) == 0 {
 		for _, s := range seedStories() {
@@ -392,6 +400,59 @@ func (p *Plugin) createGame(convID, storyID, userID string) (Game, error) {
 	return g, p.saveFile(fd)
 }
 
+// RegisterSoupRoom 标记房间为海龟汤房间（抽屉面板可用性的依据）。
+func (p *Plugin) RegisterSoupRoom(convID string) error {
+	if p.cfg.DB != nil {
+		p.ensureSchema()
+		if p.dbErr != nil {
+			return p.dbErr
+		}
+		if _, err := p.cfg.DB.Exec(`INSERT INTO ts_rooms (conv_id, created_at) VALUES (?,?)
+			ON DUPLICATE KEY UPDATE created_at=VALUES(created_at)`, convID, nowUnix()); err != nil {
+			return err
+		}
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fd, err := p.loadFile()
+	if err != nil {
+		return err
+	}
+	fd.Rooms[convID] = nowUnix()
+	return p.saveFile(fd)
+}
+
+// IsSoupRoom 房间是否已注册为海龟汤房间。
+func (p *Plugin) IsSoupRoom(convID string) bool {
+	if p.cfg.DB != nil {
+		p.ensureSchema()
+		if p.dbErr != nil {
+			return false
+		}
+		var one int
+		if err := p.cfg.DB.QueryRow("SELECT 1 FROM ts_rooms WHERE conv_id=?", convID).Scan(&one); err != nil {
+			return false
+		}
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fd, err := p.loadFile()
+	if err != nil {
+		return false
+	}
+	_, ok := fd.Rooms[convID]
+	return ok
+}
+
+func gameOrNil(g Game, err error) any {
+	if err != nil {
+		return nil
+	}
+	return g
+}
+
 // gameFor 组装给指定查看者的游戏视图（谜底只给主持人或已揭晓）。
 func (p *Plugin) gameFor(convID, userID string) (Game, error) {
 	if p.cfg.DB != nil {
@@ -532,6 +593,26 @@ func (p *Plugin) handleSub(w http.ResponseWriter, r *http.Request) {
 		p.handleStories(w, r)
 		return
 	}
+	if len(parts) == 1 && parts[0] == "rooms" && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
+		var req struct {
+			ConvID string `json:"conv_id"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.ConvID = strings.TrimSpace(req.ConvID)
+		if req.ConvID == "" {
+			http.Error(w, "conv_id 不能为空", http.StatusBadRequest)
+			return
+		}
+		if err := p.RegisterSoupRoom(req.ConvID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSONOK(w, map[string]any{"ok": true})
+		return
+	}
 	if parts[0] == "games" {
 		switch {
 		case len(parts) == 1 && r.Method == http.MethodGet:
@@ -540,16 +621,13 @@ func (p *Plugin) handleSub(w http.ResponseWriter, r *http.Request) {
 				writeJSONOK(w, map[string]any{"game": nil})
 				return
 			}
-			g, err := p.gameFor(convID, user)
-			if errors.Is(err, errGameNotFound) {
-				writeJSONOK(w, map[string]any{"game": nil})
+			g, gerr := p.gameFor(convID, user)
+			if gerr != nil && !errors.Is(gerr, errGameNotFound) {
+				http.Error(w, gerr.Error(), http.StatusInternalServerError)
 				return
 			}
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			writeJSONOK(w, map[string]any{"game": g})
+			soup := p.IsSoupRoom(convID) || gerr == nil
+			writeJSONOK(w, map[string]any{"soup": soup, "game": gameOrNil(g, gerr)})
 		case len(parts) == 1 && r.Method == http.MethodPost:
 			var req struct {
 				ConvID  string `json:"conv_id"`

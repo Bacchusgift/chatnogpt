@@ -41,6 +41,9 @@ const state = {
   access: '完全访问', // 装饰性“权限档位”
   coverMode: localStorage.getItem('cngp_effort') === 'max', // 思考伪装（覆盖真实对话）
   msgIndex: {},      // 消息索引（id → 摘要），引用回复用
+  drawerSpec: null,  // 当前会话命中的插件面板
+  drawerOpen: false,
+  drawerClosedFor: null, // 用户手动收起面板的会话（该会话内不再自动展开）
   reactions: {},     // 表情回应聚合（msgId → {emoji: [昵称]})
   coverLines: [],     // 服务端内置文稿
   readIDs: new Set(), // 当前账号和会话中已展示的消息 id（仅本地）
@@ -1359,11 +1362,29 @@ async function selectConv(id) {
     scrollBottom(true);
     connectWS(id);
     $('#input').focus();
+    state.drawerClosedFor = null;
+    renderDrawer();
     window.dispatchEvent(new CustomEvent('cngp:conv-opened', { detail: { id, conv: state.curInfo } }));
   } catch (e) { toast(e.message); }
 }
 
 
+
+// 右侧抽屉：插件面板壳子（title + body），render 由插件提供
+function renderDrawer() {
+  const pp = document.getElementById('pluginPage');
+  const ppOpen = pp && !pp.classList.contains('hidden');
+  const spec = state.drawerSpec;
+  const show = !!spec && state.drawerOpen && !ppOpen;
+  $('#btnDrawer').classList.toggle('hidden', !spec || ppOpen);
+  const d = $('#rightDrawer');
+  d.classList.toggle('hidden', !show);
+  if (!show) return;
+  $('#drawerTitle').textContent = spec.title || '面板';
+  const body = $('#drawerBody');
+  body.replaceChildren();
+  try { spec.render(body, CNGP.context()); } catch (e) { }
+}
 
 // 消息索引：id → {nickname, content}，供引用回复摘要与跳转
 function rememberMsgIndex(id, nickname, content) {
@@ -1788,6 +1809,7 @@ async function loadPluginCatalog() {
 }
 function openPluginPage() {
   closeSidebarMobile();
+  state.drawerOpen = false;
   document.querySelector('.chat-head').classList.add('hidden');
   $('#msgScroll').classList.add('hidden');
   document.querySelector('.composer-wrap').classList.add('hidden');
@@ -2735,6 +2757,16 @@ function bind() {
   $('#btnNewConv').onclick = startNewConversation;
   $('#btnPlugins').onclick = openPluginPage;
   $('#btnPluginBack').onclick = closePluginPage;
+  $('#btnDrawer').onclick = () => {
+    state.drawerOpen = !state.drawerOpen;
+    if (!state.drawerOpen) state.drawerClosedFor = state.cur;
+    renderDrawer();
+  };
+  $('#btnDrawerClose').onclick = () => {
+    state.drawerOpen = false;
+    state.drawerClosedFor = state.cur;
+    renderDrawer();
+  };
   $('#btnRenameConv').onclick = () => {
     if (state.cur && state.curInfo) renameConv(state.cur, $('#convTitle').textContent);
   };
@@ -2855,7 +2887,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 /* ---------- CNGP 插件门面：插件开发唯一依赖的稳定 API（契约见 plugins/README.md） ---------- */
 window.CNGP = {
-  version: 2,
+  version: 3,
   // 带鉴权的 HTTP 调用
   api: (path, opts) => api(path, opts),
   // 轻提示
@@ -2905,6 +2937,21 @@ window.CNGP = {
   // 贡献群聊对话模式
   roomMode(mode) {
     (window.cngpRoomModes = window.cngpRoomModes || []).push(mode);
+  },
+  // 右侧抽屉面板：插件注册面板，命中当前会话时头部出现切换按钮
+  drawer: {
+    setPanel(spec) {
+      state.drawerSpec = spec || null;
+      if (spec && state.drawerClosedFor !== state.cur) state.drawerOpen = true;
+      renderDrawer();
+    },
+    close() {
+      state.drawerOpen = false;
+      state.drawerClosedFor = state.cur;
+      renderDrawer();
+    },
+    isOpen: () => state.drawerOpen,
+    refresh() { renderDrawer(); },
   },
   // 样式化确认弹窗
   confirm({ title, body, okText, danger, onOk }) {

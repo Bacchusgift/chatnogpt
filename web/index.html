@@ -76,10 +76,14 @@
   <div class="side-mask" id="sideMask"></div>
 
   <main class="chat-main">
+    <div class="chat-col">
     <header class="chat-head">
       <button class="icon-btn mobile-only" id="btnToggleSide" type="button">☰</button>
       <div class="chat-title" id="convTitle">ChatNoGPT</div>
       <button id="btnRenameConv" class="icon-btn hidden" type="button" title="修改会话标题">✎</button>
+      <button id="btnDrawer" class="icon-btn hidden" type="button" title="面板">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" stroke-width="1.7"/><path d="M14.5 4v16" stroke="currentColor" stroke-width="1.7"/></svg>
+      </button>
     </header>
 
     <div class="msg-scroll" id="msgScroll">
@@ -141,11 +145,19 @@
       <div id="accessMenu" class="model-menu access-menu hidden"></div>
       <div id="effortMenu" class="model-menu access-menu hidden"></div>
     </div>
+    </div>
+    <aside id="rightDrawer" class="right-drawer hidden">
+      <header class="rd-head">
+        <div class="rd-title" id="drawerTitle">面板</div>
+        <button id="btnDrawerClose" class="icon-btn" type="button" title="收起面板">✕</button>
+      </header>
+      <div class="rd-body" id="drawerBody"></div>
+    </aside>
   </main>
 </div>
 
 <div id="modalRoot"></div>
 <div id="toast"></div>
-<script src="/app.js?v=2.3.6"></script>
+<script src="/app.js?v=2.3.10"></script>
 </body>
 </html>
