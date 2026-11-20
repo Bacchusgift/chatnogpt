@@ -5,6 +5,7 @@ package turtlesoup
 // 主持人随时结束游戏并揭晓谜底。故事本支持系统内置 + 用户上传（谜底仅存储方可见）。
 
 import (
+	"chatnogpt/plugins/pluginbase"
 	"context"
 	crand "crypto/rand"
 	"database/sql"
@@ -27,19 +28,16 @@ const (
 	Name       = "turtle-soup"
 	Title      = "海龟汤"
 	Desc       = "群聊海龟汤推理：主持人出题，玩家提问，快捷回复「是 / 不是 / 是也不是 / 无关」"
-	FrontendJS = "/plugins/turtle-soup/soup.js"
+	FrontendJS = "/plugins/turtle-soup/soup.js?v=2.3.0"
 )
 
-type ctxKey struct{}
-
-// WithUser 由基座门禁注入调用者身份。
+// WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。
 func WithUser(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, ctxKey{}, userID)
+	return pluginbase.WithUser(ctx, userID)
 }
 
 func userIDFrom(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKey{}).(string)
-	return v
+	return pluginbase.UserIDFrom(ctx)
 }
 
 // 故事本阶段：1=进行中 2=已揭晓
@@ -84,6 +82,34 @@ type Plugin struct {
 
 func New(cfg Config) *Plugin {
 	return &Plugin{cfg: cfg}
+}
+
+// Meta 插件自描述：目录页、脚本注入、对话模式与详情内容由基座从此派生。
+func (p *Plugin) Meta() pluginbase.Meta {
+	return pluginbase.Meta{
+		Name:      Name,
+		Title:     Title,
+		Desc:      Desc,
+		Icon:      "🍲",
+		Script:    FrontendJS,
+		RoomModes: []pluginbase.RoomMode{{ID: "turtle-soup", Label: "海龟汤"}},
+		Detail: []pluginbase.DetailItem{
+			{Type: "step", Text: "开启插件后，左侧「Agent Team」点 + 创建群聊室，对话模式选「海龟汤」；"},
+			{Type: "step", Text: "建房人即主持人：开局前选一个故事本（内置经典或自己上传），系统把谜面发到群里；"},
+			{Type: "step", Text: "谜底只有主持人能看到。其他成员像正常聊天一样提问，主持人自由回应；"},
+			{Type: "step", Text: "主持人可在成员消息下点快捷按钮回复「是 / 不是 / 是也不是 / 无关」；"},
+			{Type: "step", Text: "主持人随时结束游戏并揭晓谜底，全员可见；伪装与普通聊天完全一致。"},
+			{Type: "note", Text: "在游戏面板也可以上传自己的故事本：谜底只有你能看到，别人可以拿它玩。"},
+		},
+	}
+}
+
+// Mount 自挂载：API 路由与前端脚本路由（均套基座门禁）。
+func (p *Plugin) Mount(mux *http.ServeMux, gate pluginbase.Gate) {
+	mux.HandleFunc(strings.SplitN(FrontendJS, "?", 2)[0], p.FrontendJSHandler)
+	p.ensureSchema()
+	mux.HandleFunc(Prefix, gate(p.handleStories))
+	mux.HandleFunc(Prefix+"/", gate(p.handleSub))
 }
 
 // Register mounts the plugin's routes under prefix. gate 由基座提供：

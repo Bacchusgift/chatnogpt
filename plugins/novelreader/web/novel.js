@@ -711,3 +711,6 @@ function novelCreateModal() {
   };
   name.focus();
 }
+
+// 插件自初始化：脚本由基座按启用目录注入，加载完成即渲染阅读模型入口
+novelLoad().catch(() => { });

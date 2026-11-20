@@ -425,11 +425,13 @@ function showApp() {
   if (state.coverMode) ensureCoverPool();
   loadProjects();
   loadConvs();
-  for (const [pname, psrc] of Object.entries(PLUGIN_SCRIPTS)) {
-    ensurePluginScript(pname, psrc).then(() => {
-      if (pname === 'novel-reader' && typeof novelLoad === 'function') novelLoad();
-    });
-  }
+  // 插件脚本按目录注入：目录来自 /api/plugins（enabled 且带 script），基座零插件知识
+  loadPluginCatalog().then(catalog => {
+    state.pluginCatalog = catalog;
+    const loads = catalog.filter(p => p.enabled && p.script)
+      .map(p => ensurePluginScript(p.name, p.script));
+    Promise.all(loads).then(() => window.dispatchEvent(new CustomEvent('cngp:plugins-loaded')));
+  });
   maybeShowNotifBanner();
 }
 
@@ -1329,6 +1331,7 @@ async function selectConv(id) {
     scrollBottom(true);
     connectWS(id);
     $('#input').focus();
+    window.dispatchEvent(new CustomEvent('cngp:conv-opened', { detail: { id, conv: state.curInfo } }));
   } catch (e) { toast(e.message); }
 }
 
@@ -1594,6 +1597,7 @@ function addMessageVotes(actions) {
 function addAIActions(row, content) {
   const actions = document.createElement('div'); actions.className = 'msg-actions';
   const copy = makeMessageAction('复制', messageCopyIcon);
+  // 插件可通过监听 cngp:message-actions 向 actions 追加按钮（契约见 plugins/README.md）
   copy.onclick = async () => {
     try { await navigator.clipboard.writeText(content); toast('已复制'); }
     catch { toast('复制失败'); }
@@ -1603,6 +1607,7 @@ function addAIActions(row, content) {
   actions.append(copy, refresh);
   addMessageVotes(actions);
   row.appendChild(actions);
+  window.dispatchEvent(new CustomEvent('cngp:message-actions', { detail: { row, actions, content } }));
 }
 
 function appendAIStatic(nickname, content, ts, msgId, imageID) {
@@ -1648,10 +1653,13 @@ window.addEventListener('beforeinstallprompt', e => {
   deferredInstallPrompt = e;
 });
 
-const PLUGIN_SCRIPTS = {
-  'novel-reader': '/plugins/novel-reader/novel.js?v=1.9.0',
-  'turtle-soup': '/plugins/turtle-soup/soup.js?v=2.1.0',
-};
+// 插件目录缓存（Meta 来自服务端注册表；契约见 plugins/README.md）
+async function loadPluginCatalog() {
+  try {
+    const d = await api('/api/plugins');
+    return d.plugins || [];
+  } catch (e) { return state.pluginCatalog || []; }
+}
 function openPluginPage() {
   closeSidebarMobile();
   document.querySelector('.chat-head').classList.add('hidden');
@@ -1672,8 +1680,8 @@ async function renderPluginPage() {
   list.replaceChildren();
   const loading = document.createElement('p'); loading.className = 'pp-note'; loading.textContent = '加载中…';
   list.appendChild(loading);
-  let plugins = [];
-  try { plugins = (await api('/api/plugins')).plugins || []; }
+  let plugins = state.pluginCatalog || [];
+  try { plugins = (await loadPluginCatalog()); }
   catch (e) {
     list.replaceChildren();
     const p = document.createElement('p'); p.className = 'pp-note'; p.textContent = '插件列表加载失败：' + e.message;
@@ -1689,9 +1697,10 @@ async function renderPluginPage() {
   for (const p of plugins) list.appendChild(buildPluginCard(p));
 }
 function buildPluginCard(p) {
+  let stepNo = 0;
   const card = document.createElement('div'); card.className = 'pp-card';
   const head = document.createElement('div'); head.className = 'pp-card-head';
-  const icon = document.createElement('div'); icon.className = 'pp-icon'; icon.textContent = p.name === 'novel-reader' ? '📖' : '🧩';
+  const icon = document.createElement('div'); icon.className = 'pp-icon'; icon.textContent = p.icon || '🧩';
   const title = document.createElement('div'); title.className = 'pp-title'; title.textContent = p.title;
   const badge = document.createElement('span'); badge.className = 'pp-badge ' + (p.enabled ? 'on' : 'off'); badge.textContent = p.enabled ? '已启用' : '未启用';
   head.append(icon, title, badge);
@@ -1706,8 +1715,7 @@ function buildPluginCard(p) {
       p.enabled = !p.enabled;
       if (p.enabled) {
         state.enabledPlugins = [...new Set([...(state.enabledPlugins || []), p.name])];
-        const src = PLUGIN_SCRIPTS[p.name];
-        if (src) ensurePluginScript(p.name, src).then(() => { if (p.name === 'novel-reader' && typeof novelLoad === 'function') novelLoad(); });
+        if (p.script) ensurePluginScript(p.name, p.script);
         toast(p.title + ' 已启用');
       } else {
         state.enabledPlugins = (state.enabledPlugins || []).filter(x => x !== p.name);
@@ -1718,7 +1726,7 @@ function buildPluginCard(p) {
   };
   actions.appendChild(btnToggle);
   let details = null;
-  if (p.name === 'turtle-soup') {
+  if (p.detail && p.detail.length) {
     const btnDetail = document.createElement('button'); btnDetail.type = 'button'; btnDetail.className = 'pp-btn ghost'; btnDetail.textContent = '查看详情';
     details = document.createElement('div'); details.className = 'pp-details';
     btnDetail.onclick = () => {
@@ -1726,54 +1734,24 @@ function buildPluginCard(p) {
       btnDetail.textContent = details.classList.contains('open') ? '收起详情' : '查看详情';
     };
     actions.appendChild(btnDetail);
-    const h = document.createElement('h4'); h.className = 'pp-details-title'; h.textContent = '玩法说明（群聊推理游戏）';
-    details.appendChild(h);
-    const steps = [
-      '开启插件后，左侧「Agent Team」点 + 创建群聊室，对话模式选「海龟汤」；',
-      '建房人即主持人：开局前选一个故事本（内置经典或自己上传），系统把谜面发到群里；',
-      '谜底只有主持人能看到。其他成员像正常聊天一样提问，主持人自由回应；',
-      '主持人可在成员消息下点快捷按钮回复「是 / 不是 / 是也不是 / 无关」；',
-      '主持人随时结束游戏并揭晓谜底，全员可见；伪装与普通聊天完全一致。',
-    ];
-    steps.forEach((t, i) => {
-      const row = document.createElement('div'); row.className = 'pp-step';
-      const n = document.createElement('span'); n.className = 'pp-step-num'; n.textContent = String(i + 1);
-      const txt = document.createElement('span'); txt.textContent = t;
-      row.append(n, txt); details.appendChild(row);
-    });
-    const note = document.createElement('p'); note.className = 'pp-note';
-    note.textContent = '在游戏面板也可以上传自己的故事本：谜底只有你能看到，别人可以拿它玩。';
-    details.appendChild(note);
-  } else if (p.name === 'novel-reader') {
-    const btnDetail = document.createElement('button'); btnDetail.type = 'button'; btnDetail.className = 'pp-btn ghost'; btnDetail.textContent = '查看详情';
-    details = document.createElement('div'); details.className = 'pp-details';
-    btnDetail.onclick = () => {
-      details.classList.toggle('open');
-      btnDetail.textContent = details.classList.contains('open') ? '收起详情' : '查看详情';
-    };
-    actions.appendChild(btnDetail);
-    const h = document.createElement('h4'); h.className = 'pp-details-title'; h.textContent = '浏览器扩展安装步骤（番茄 / 晋江章节桥接必需）';
-    details.appendChild(h);
-    const steps = [
-      '点击下方「下载浏览器扩展」保存 zip，解压得到 fanqie-reader 文件夹；',
-      'Chrome 地址栏输入 chrome://extensions 并回车，打开右上角「开发者模式」；',
-      '点左上角「加载已解压的扩展程序」，选择刚解压的 fanqie-reader 文件夹；',
-      '回到 ChatNoGPT 打开番茄阅读会话，即可在番茄小说 / 晋江文学的章节页拉取正文。',
-    ];
-    steps.forEach((t, i) => {
-      const row = document.createElement('div'); row.className = 'pp-step';
-      const n = document.createElement('span'); n.className = 'pp-step-num'; n.textContent = String(i + 1);
-      const txt = document.createElement('span'); txt.textContent = t;
-      row.append(n, txt); details.appendChild(row);
-    });
+    for (const item of p.detail) {
+      if (item.type === 'step') {
+        details.appendChild((() => {
+          const row = document.createElement('div'); row.className = 'pp-step';
+          const n = document.createElement('span'); n.className = 'pp-step-num'; n.textContent = String(++stepNo);
+          const txt = document.createElement('span'); txt.textContent = item.text;
+          row.append(n, txt); return row;
+        })());
+      } else {
+        const note = document.createElement('p'); note.className = item.type === 'note' ? 'pp-note' : 'pp-desc'; note.textContent = item.text;
+        details.appendChild(note);
+      }
+    }
     if (p.download) {
-      const dl = document.createElement('a'); dl.className = 'pp-dl'; dl.href = p.download; dl.download = 'chatnogpt-extension.zip';
-      dl.textContent = '⬇ 下载浏览器扩展（Chrome / Edge）';
+      const dl = document.createElement('a'); dl.className = 'pp-dl'; dl.href = p.download; dl.download = '';
+      dl.textContent = '⬇ 下载扩展 / 资源';
       details.appendChild(dl);
     }
-    const note = document.createElement('p'); note.className = 'pp-note';
-    note.textContent = '扩展只读取你本机浏览器里已登录站点的章节内容，不会保存网站密码；停用插件后阅读会话入口随之隐藏。';
-    details.appendChild(note);
   }
   card.append(head, desc, actions, details || '');
   return card;

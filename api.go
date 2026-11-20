@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"chatnogpt/plugins/novelreader"
-	"chatnogpt/plugins/turtlesoup"
+	"chatnogpt/plugins/pluginbase"
 	"io"
 	"log"
 	"net/http"
@@ -124,8 +123,8 @@ func (s *server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
 		return
 	}
-	enabled := make([]string, 0, len(pluginCatalog))
-	for _, p := range pluginCatalog {
+	enabled := make([]string, 0, len(pluginCatalog()))
+	for _, p := range pluginCatalog() {
 		disabled := false
 		for _, name := range u.DisabledPlugins {
 			if name == p.Name {
@@ -400,10 +399,29 @@ func (s *server) handleProjectSub(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// pluginCatalog 基座可感知的插件目录（与 plugins/ 目录一一对应）。
-var pluginCatalog = []struct{ Name, Title, Desc, Download string }{
-	{novelreader.Name, novelreader.Title, novelreader.Desc, "/downloads/fanqie-extension.zip"},
-	{turtlesoup.Name, turtlesoup.Title, turtlesoup.Desc, ""},
+// pluginMeta 目录条目从注册表 Meta 派生（基座不再手写插件清单）。
+type pluginMeta struct {
+	Name      string                  `json:"name"`
+	Title     string                  `json:"title"`
+	Desc      string                  `json:"desc"`
+	Icon      string                  `json:"icon,omitempty"`
+	Download  string                  `json:"download,omitempty"`
+	Script    string                  `json:"script,omitempty"`
+	Detail    []pluginbase.DetailItem `json:"detail,omitempty"`
+	RoomModes []pluginbase.RoomMode   `json:"room_modes,omitempty"`
+}
+
+// pluginCatalog 已登记插件目录，全部由注册表 Meta 派生。
+func pluginCatalog() []pluginMeta {
+	out := []pluginMeta{}
+	for _, p := range pluginbase.All() {
+		out = append(out, pluginMeta{
+			Name: p.Meta().Name, Title: p.Meta().Title, Desc: p.Meta().Desc,
+			Icon: p.Meta().Icon, Download: p.Meta().Download, Script: p.Meta().Script,
+			Detail: p.Meta().Detail, RoomModes: p.Meta().RoomModes,
+		})
+	}
+	return out
 }
 
 func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
@@ -426,7 +444,7 @@ func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		known := false
-		for _, p := range pluginCatalog {
+		for _, p := range pluginCatalog() {
 			if p.Name == req.Name {
 				known = true
 				break
@@ -444,10 +462,15 @@ func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 		disabled[name] = true
 	}
 	out := []map[string]any{}
-	for _, p := range pluginCatalog {
+	for _, p := range pluginCatalog() {
+		script := p.Script
+		if disabled[p.Name] {
+			script = ""
+		}
 		out = append(out, map[string]any{
-			"name": p.Name, "title": p.Title, "desc": p.Desc,
+			"name": p.Name, "title": p.Title, "desc": p.Desc, "icon": p.Icon,
 			"enabled": !disabled[p.Name], "download": p.Download,
+			"script": script, "detail": p.Detail, "room_modes": p.RoomModes,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": out})

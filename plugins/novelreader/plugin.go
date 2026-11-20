@@ -6,6 +6,7 @@ package novelreader
 // 旧版散落在 data.json 的 custom_models 会在首次访问时自动迁入本插件文件。
 
 import (
+	"chatnogpt/plugins/pluginbase"
 	"context"
 	crand "crypto/rand"
 	"database/sql"
@@ -30,19 +31,16 @@ const (
 	Name       = "novel-reader"
 	Title      = "小说阅读"
 	Desc       = "自定义阅读模型：番茄小说链接续读、TXT 上传阅读、章节透视"
-	FrontendJS = "/plugins/novel-reader/novel.js"
+	FrontendJS = "/plugins/novel-reader/novel.js?v=2.3.0"
 )
 
-type ctxKey struct{}
-
-// WithUser 由基座门禁注入调用者身份。
+// WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。
 func WithUser(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, ctxKey{}, userID)
+	return pluginbase.WithUser(ctx, userID)
 }
 
 func userIDFrom(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKey{}).(string)
-	return v
+	return pluginbase.UserIDFrom(ctx)
 }
 
 type Model struct {
@@ -71,6 +69,32 @@ type Plugin struct {
 
 func New(cfg Config) *Plugin {
 	return &Plugin{cfg: cfg}
+}
+
+// Meta 插件自描述：目录页、脚本注入与详情内容由基座从此派生。
+func (p *Plugin) Meta() pluginbase.Meta {
+	return pluginbase.Meta{
+		Name:     Name,
+		Title:    Title,
+		Desc:     Desc,
+		Icon:     "📖",
+		Script:   FrontendJS,
+		Download: "/downloads/fanqie-extension.zip",
+		Detail: []pluginbase.DetailItem{
+			{Type: "note", Text: "阅读番茄小说 / 晋江文学需要安装浏览器扩展桥接章节内容；TXT 阅读无需扩展。"},
+			{Type: "step", Text: "点击下方「下载浏览器扩展」保存 zip，解压得到 fanqie-reader 文件夹；"},
+			{Type: "step", Text: "Chrome 地址栏输入 chrome://extensions 并回车，打开右上角「开发者模式」；"},
+			{Type: "step", Text: "点左上角「加载已解压的扩展程序」，选择刚解压的 fanqie-reader 文件夹；"},
+			{Type: "step", Text: "回到 ChatNoGPT 打开番茄阅读会话，即可在番茄小说 / 晋江文学的章节页拉取正文。"},
+			{Type: "note", Text: "扩展只读取你本机浏览器里已登录站点的章节内容，不会保存网站密码。"},
+		},
+	}
+}
+
+// Mount 自挂载：API 路由与前端脚本路由（均套基座门禁）。
+func (p *Plugin) Mount(mux *http.ServeMux, gate pluginbase.Gate) {
+	mux.HandleFunc(strings.SplitN(FrontendJS, "?", 2)[0], p.FrontendJSHandler)
+	p.Register(mux, Prefix, gate)
 }
 
 // Register mounts the plugin's routes under prefix. gate 由基座提供：

@@ -46,14 +46,11 @@
   function amHost() { return state.curInfo && state.curInfo.creator_id === state.me.id; }
   function sendText(t) { if (typeof doSend === 'function') doSend({ text: t }); }
 
-  // ---- selectConv 钩子：进入/切换会话时刷新游戏态 ----
-  const origSelectConv = window.selectConv;
-  window.selectConv = async function (id) {
+  // ---- 基座 hook：cngp:conv-opened（契约见 plugins/README.md） ----
+  window.addEventListener('cngp:conv-opened', e => {
     clearInterval(gs.timer); gs.timer = null;
-    const r = await origSelectConv.apply(this, arguments);
-    tsOnConv(id);
-    return r;
-  };
+    tsOnConv(e.detail && e.detail.id);
+  });
 
   function tsOnConv(id) {
     gs.conv = id; gs.game = null;
@@ -233,12 +230,8 @@
       if (row) tsAugmentActions(row);
     });
   }
-  if (typeof addAIActions === 'function') {
-    const orig = window.addAIActions;
-    window.addAIActions = function (row, content) {
-      const r = orig.apply(this, arguments);
-      try { tsAugmentActions(row); } catch (e) { }
-      return r;
-    };
-  }
+  // ---- 基座 hook：cngp:message-actions（消息操作条渲染完成） ----
+  window.addEventListener('cngp:message-actions', e => {
+    try { tsAugmentActions(e.detail.row); } catch (err) { }
+  });
 })();

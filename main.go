@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"chatnogpt/plugins/novelreader"
+	"chatnogpt/plugins/pluginbase"
 	"chatnogpt/plugins/turtlesoup"
 	"database/sql"
 	"embed"
@@ -231,41 +232,29 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 		pluginDB = dbs.DB()
 	}
 	novelPlugin := novelreader.New(novelreader.Config{DB: pluginDB, Dir: s.store.Dir()})
-	mux.HandleFunc("/plugins/novel-reader/novel.js", novelPlugin.FrontendJSHandler)
-	novelPlugin.Register(mux, "/api/plugins/novel-reader", func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			u := s.authUser(r)
-			if u == nil {
-				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-				return
-			}
-			for _, name := range u.DisabledPlugins {
-				if name == novelreader.Name {
-					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在侧栏「插件」页中开启"))
+	// 插件注册：新插件实现 pluginbase.Plugin 后在此登记一次，基座其余处零感知
+	pluginbase.Register(novelPlugin)
+	pluginbase.Register(turtlesoup.New(turtlesoup.Config{DB: pluginDB, Dir: s.store.Dir()}))
+	for _, pl := range pluginbase.All() {
+		pl := pl
+		meta := pl.Meta()
+		pl.Mount(mux, func(next http.HandlerFunc) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				u := s.authUser(r)
+				if u == nil {
+					writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
 					return
 				}
-			}
-			next(w, r.WithContext(novelreader.WithUser(r.Context(), u.ID)))
-		}
-	})
-	SoupPlugin := turtlesoup.New(turtlesoup.Config{DB: pluginDB, Dir: s.store.Dir()})
-	mux.HandleFunc("/plugins/turtle-soup/soup.js", SoupPlugin.FrontendJSHandler)
-	SoupPlugin.Register(mux, "/api/plugins/turtle-soup", func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			u := s.authUser(r)
-			if u == nil {
-				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-				return
-			}
-			for _, name := range u.DisabledPlugins {
-				if name == turtlesoup.Name {
-					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在侧栏「插件」页中开启"))
-					return
+				for _, name := range u.DisabledPlugins {
+					if name == meta.Name {
+						writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在侧栏「插件」页中开启"))
+						return
+					}
 				}
+				next(w, r.WithContext(pluginbase.WithUser(r.Context(), u.ID)))
 			}
-			next(w, r.WithContext(turtlesoup.WithUser(r.Context(), u.ID)))
-		}
-	})
+		})
+	}
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/downloads/fanqie-extension.zip", s.handleExtensionZip)
 	mux.HandleFunc("/api/projects", s.handleProjects)
