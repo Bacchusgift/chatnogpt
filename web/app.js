@@ -87,6 +87,7 @@ function bumpUnread() {
   if (!document.hidden) return;
   state.unread++;
   document.title = `(${state.unread}) ${state.baseTitle}`;
+  updateAppBadge();
 }
 
 function resetUnread() {
@@ -94,7 +95,25 @@ function resetUnread() {
     state.unread = 0;
     document.title = state.baseTitle;
   }
+  updateAppBadge();
 }
+
+// PWA/Mac：Dock 图标未读角标（Badging API），不支持的平台静默跳过
+function updateAppBadge() {
+  try {
+    if (!('setAppBadge' in navigator)) return;
+    const server = (state.convs || []).reduce((n, c) => n + (c.unread_count || 0), 0);
+    const total = server + (state.unread || 0);
+    if (total > 0) navigator.setAppBadge(total).catch(() => {});
+    else navigator.clearAppBadge().catch(() => {});
+  } catch {}
+}
+
+// 是否安装为独立应用（桌面 PWA / iOS 主屏）
+function pwaStandalone() {
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+}
+function isMacUA() { return /Macintosh|Mac OS X/.test(navigator.userAgent || ''); }
 
 function unreadBadgeEl(count) {
   const badge = document.createElement('span');
@@ -112,7 +131,7 @@ async function markConversationRead(id) {
 
 // 新消息提醒：标题计数 + 浏览器系统通知；onScreen 表示消息正显示在当前会话里，
 // 页签可见时不重复弹窗（内容已在眼前），页签隐藏时照常提醒。
-const NOTIF_ICON = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 32 32\'%3E%3Ccircle cx=\'16\' cy=\'16\' r=\'14\' fill=\'%230d0d0d\'/%3E%3Cpath d=\'M9 13h14M9 18h9\' stroke=\'white\' stroke-width=\'2.4\' stroke-linecap=\'round\'/%3E%3C/svg%3E';
+const NOTIF_ICON = '/icons/icon-192.png';
 
 // 新消息提示音：短促双音，可关闭（通知声音开关在“思考强度”菜单里）
 let notifyAudioCtx = null;
@@ -451,7 +470,12 @@ function maybeShowNotifBanner() {
       try {
         const p = await Notification.requestPermission();
         if (p === 'granted') { bar.remove(); toast('系统通知已开启'); }
-        else { bar.textContent = '通知已被浏览器拒绝：请在地址栏左侧站点设置里允许通知后刷新'; }
+        else {
+          bar.textContent = pwaStandalone()
+            ? (isMacUA() ? '通知已被拒绝：macOS 系统设置 → 通知 → 找到本应用并允许，然后重启应用'
+                         : '通知已被拒绝：请在系统设置中允许本应用的通知后重试')
+            : '通知已被浏览器拒绝：请在地址栏左侧站点设置里允许通知后刷新';
+        }
       } catch {}
     };
     const later = document.createElement('button');
@@ -826,6 +850,8 @@ function renderConvList() {
   list.appendChild(toggle);
   if (typeof novelRenderList === 'function') novelRenderList(list);
 }
+  updateAppBadge();
+
 
 async function refreshProjectsAndConvs() {
   await loadConvs(true);
