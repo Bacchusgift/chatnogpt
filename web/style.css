@@ -744,3 +744,20 @@ body.cover-on .msg-real.covered.flash::after {
 .confirm-ok:hover { background: #e6e6e6; }
 .confirm-ok.danger { background: #e5484d; color: #fff; }
 .confirm-ok.danger:hover { background: #d63e43; }
+
+/* ---------- 引用回复 + 表情回应（伪装安全：默认零视觉痕迹，悬停揭示） ---------- */
+.msg-reactions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px;
+  opacity: 0; transition: opacity .15s; }
+.msg-ai:hover .msg-reactions, .msg-own:hover .msg-reactions,
+.msg-real:hover .msg-reactions, .msg-reactions:focus-within { opacity: 1; }
+@media (hover: none) { .msg-reactions { opacity: 1; } }
+.react-chip { padding: 2px 9px; border-radius: 999px; font-size: 12.5px; line-height: 1.4;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: #cfcfcf; }
+.react-chip:hover { background: rgba(255,255,255,.1); }
+.react-chip.mine { border-color: rgba(140,235,190,.5); background: rgba(140,235,190,.12); color: #d8e7de; }
+.reply-indicator { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px;
+  margin-bottom: 6px; border-radius: 9px; background: rgba(255,255,255,.06);
+  border-left: 2px solid rgba(255,184,107,.5); font-size: 12.5px; color: #c9c9c9; }
+.reply-indicator span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-indicator button { margin-left: auto; border: 0; background: none; color: #999; font-size: 15px; padding: 0 4px; border-radius: 6px; }
+.reply-indicator button:hover { background: rgba(255,255,255,.08); color: #fff; }

@@ -1371,20 +1371,16 @@ function rememberMsgIndex(id, nickname, content) {
   state.msgIndex = state.msgIndex || {};
   state.msgIndex[id] = { nickname, content: (content || '').slice(0, 80) };
 }
+// 引用关联：伪装安全呈现——不插入任何常驻 DOM，仅写入悬停提示；
+// 悬停消息时经操作区的 ↩ 图标跳转原消息（与操作按钮同级的悬停显隐规则）
 function appendQuoteBlock(row, m) {
   if (!m || !m.reply_to) return;
-  const q = document.createElement('div');
-  q.className = 'msg-quote';
   const src = (state.msgIndex || {})[m.reply_to];
   const who = src ? src.nickname : '';
   const snip = src ? src.content.replace(/\s+/g, ' ').slice(0, 60) : '原消息';
-  const whoEl = document.createElement('span'); whoEl.className = 'quote-who'; whoEl.textContent = '↩ ' + who;
-  const txtEl = document.createElement('span'); txtEl.className = 'quote-text'; txtEl.textContent = snip;
-  q.append(whoEl, txtEl);
-  q.onclick = () => scrollToMsg(m.reply_to);
-  const wrap = row.querySelector('.real-wrap') || row;
-  const body = wrap.querySelector('.ai-body, .bubble, .own-original');
-  if (body) wrap.insertBefore(q, body); else wrap.appendChild(q);
+  row.dataset.replyTo = m.reply_to;
+  const hint = '↩ 回应 ' + (who || '原消息') + '：' + snip;
+  row.title = row.title ? row.title + '\n' + hint : hint;
 }
 function scrollToMsg(mid) {
   const row = document.querySelector('#messages [data-mid="' + mid + '"]');
