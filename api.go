@@ -386,8 +386,8 @@ func (s *server) handleProjectSub(w http.ResponseWriter, r *http.Request) {
 }
 
 // pluginCatalog 基座可感知的插件目录（与 plugins/ 目录一一对应）。
-var pluginCatalog = []struct{ Name, Title, Desc string }{
-	{novelreader.Name, novelreader.Title, novelreader.Desc},
+var pluginCatalog = []struct{ Name, Title, Desc, Download string }{
+	{novelreader.Name, novelreader.Title, novelreader.Desc, "/downloads/fanqie-extension.zip"},
 }
 
 func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +431,7 @@ func (s *server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pluginCatalog {
 		out = append(out, map[string]any{
 			"name": p.Name, "title": p.Title, "desc": p.Desc,
-			"enabled": !disabled[p.Name],
+			"enabled": !disabled[p.Name], "download": p.Download,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": out})

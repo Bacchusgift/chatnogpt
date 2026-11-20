@@ -240,7 +240,7 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 			}
 			for _, name := range u.DisabledPlugins {
 				if name == novelreader.Name {
-					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在个人设置中开启"))
+					writeErr(w, http.StatusForbidden, errors.New("插件未启用，可在侧栏「插件」页中开启"))
 					return
 				}
 			}
@@ -248,6 +248,7 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 		}
 	})
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
+	mux.HandleFunc("/downloads/fanqie-extension.zip", s.handleExtensionZip)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProjectSub)
 

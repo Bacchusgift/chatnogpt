@@ -76,7 +76,6 @@ func New(cfg Config) *Plugin {
 // Register mounts the plugin's routes under prefix. gate 由基座提供：
 // 已完成鉴权与按用户启用检查的处理器包装。
 func (p *Plugin) Register(mux *http.ServeMux, prefix string, gate func(http.HandlerFunc) http.HandlerFunc) {
-	log.Println("DEBUG Register:", prefix)
 	mux.HandleFunc(prefix, gate(p.handleModels))
 	mux.HandleFunc(prefix+"/", gate(p.handleModelSub))
 }

@@ -50,6 +50,10 @@
         <span>搜索消息</span>
         <kbd>⌘P</kbd>
       </button>
+      <button id="btnPlugins" class="side-item" type="button" title="插件管理">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M13 3v4a1 1 0 0 1-2 0V3H8a2 2 0 0 0-2 2v3h1a2 2 0 1 1 0 4H6v3a2 2 0 0 0 2 2h3v-1a2 2 0 1 1 4 0v1h3a2 2 0 0 0 2-2v-3h-1a2 2 0 1 1 0-4h1V8a2 2 0 0 0-2-2h-3V3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span>插件</span>
+      </button>
     </div>
     <nav id="convList"></nav>
     <div class="side-foot">
@@ -78,6 +82,17 @@
         </div>
       </div>
     </div>
+
+    <section id="pluginPage" class="plugin-page hidden">
+      <header class="pp-head">
+        <button id="btnPluginBack" class="pp-back" type="button" title="返回聊天">←</button>
+        <div>
+          <h2>插件</h2>
+          <p>扩展 ChatNoGPT 能力的功能模块，按账号独立启停。</p>
+        </div>
+      </header>
+      <div class="pp-body" id="ppList"></div>
+    </section>
 
     <div class="composer-wrap">
       <div class="composer">
@@ -123,6 +138,6 @@
 
 <div id="modalRoot"></div>
 <div id="toast"></div>
-<script src="/app.js?v=2.0.0"></script>
+<script src="/app.js?v=2.0.1"></script>
 </body>
 </html>

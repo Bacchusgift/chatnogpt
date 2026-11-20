@@ -906,6 +906,7 @@ function openPicker(title) {
 }
 
 async function startNewConversation() {
+  closePluginPage();
   const { panel, cancel, close } = openPicker('选择模型，开始新会话');
   try {
     const d = await api('/api/models');
@@ -1016,6 +1017,7 @@ function renameConv(id, title) {
 /* ---------- 聊天切换与消息渲染 ---------- */
 
 async function selectConv(id) {
+  closePluginPage();
   state.cur = id;
   state.gen++;
   const gen = state.gen;
@@ -1396,6 +1398,109 @@ let draggingConvID = '';
 // pluginNovels 读取阅读插件模型列表（插件未加载时返回空数组）。
 function pluginNovels() {
   return typeof novelModels === 'undefined' ? [] : (novelModels || []);
+}
+
+// ===== 插件管理页：侧栏「插件」入口，右侧整页设置 =====
+const PLUGIN_SCRIPTS = { 'novel-reader': '/plugins/novel-reader/novel.js?v=1.9.0' };
+function openPluginPage() {
+  closeSidebarMobile();
+  document.querySelector('.chat-head').classList.add('hidden');
+  $('#msgScroll').classList.add('hidden');
+  document.querySelector('.composer-wrap').classList.add('hidden');
+  $('#pluginPage').classList.remove('hidden');
+  renderPluginPage();
+}
+function closePluginPage() {
+  if ($('#pluginPage').classList.contains('hidden')) return;
+  $('#pluginPage').classList.add('hidden');
+  document.querySelector('.chat-head').classList.remove('hidden');
+  $('#msgScroll').classList.remove('hidden');
+  document.querySelector('.composer-wrap').classList.remove('hidden');
+}
+async function renderPluginPage() {
+  const list = $('#ppList');
+  list.replaceChildren();
+  const loading = document.createElement('p'); loading.className = 'pp-note'; loading.textContent = '加载中…';
+  list.appendChild(loading);
+  let plugins = [];
+  try { plugins = (await api('/api/plugins')).plugins || []; }
+  catch (e) {
+    list.replaceChildren();
+    const p = document.createElement('p'); p.className = 'pp-note'; p.textContent = '插件列表加载失败：' + e.message;
+    list.appendChild(p);
+    return;
+  }
+  list.replaceChildren();
+  if (!plugins.length) {
+    const p = document.createElement('p'); p.className = 'pp-note'; p.textContent = '暂无可用插件';
+    list.appendChild(p);
+    return;
+  }
+  for (const p of plugins) list.appendChild(buildPluginCard(p));
+}
+function buildPluginCard(p) {
+  const card = document.createElement('div'); card.className = 'pp-card';
+  const head = document.createElement('div'); head.className = 'pp-card-head';
+  const icon = document.createElement('div'); icon.className = 'pp-icon'; icon.textContent = p.name === 'novel-reader' ? '📖' : '🧩';
+  const title = document.createElement('div'); title.className = 'pp-title'; title.textContent = p.title;
+  const badge = document.createElement('span'); badge.className = 'pp-badge ' + (p.enabled ? 'on' : 'off'); badge.textContent = p.enabled ? '已启用' : '未启用';
+  head.append(icon, title, badge);
+  const desc = document.createElement('p'); desc.className = 'pp-desc'; desc.textContent = p.desc || '';
+  const actions = document.createElement('div'); actions.className = 'pp-actions';
+  const btnToggle = document.createElement('button'); btnToggle.type = 'button'; btnToggle.className = 'pp-btn ' + (p.enabled ? '' : 'primary'); btnToggle.textContent = p.enabled ? '停用' : '启用';
+  btnToggle.onclick = async () => {
+    const action = p.enabled ? 'disable' : 'enable';
+    btnToggle.disabled = true;
+    try {
+      await api('/api/plugins', { body: { action, name: p.name } });
+      p.enabled = !p.enabled;
+      if (p.enabled) {
+        state.enabledPlugins = [...new Set([...(state.enabledPlugins || []), p.name])];
+        const src = PLUGIN_SCRIPTS[p.name];
+        if (src) ensurePluginScript(p.name, src).then(() => { if (p.name === 'novel-reader' && typeof novelLoad === 'function') novelLoad(); });
+        toast(p.title + ' 已启用');
+      } else {
+        state.enabledPlugins = (state.enabledPlugins || []).filter(x => x !== p.name);
+        toast(p.title + ' 已停用，刷新页面后完全生效');
+      }
+      card.replaceWith(buildPluginCard(p));
+    } catch (e) { toast(e.message); btnToggle.disabled = false; }
+  };
+  actions.appendChild(btnToggle);
+  let details = null;
+  if (p.name === 'novel-reader') {
+    const btnDetail = document.createElement('button'); btnDetail.type = 'button'; btnDetail.className = 'pp-btn ghost'; btnDetail.textContent = '查看详情';
+    details = document.createElement('div'); details.className = 'pp-details';
+    btnDetail.onclick = () => {
+      details.classList.toggle('open');
+      btnDetail.textContent = details.classList.contains('open') ? '收起详情' : '查看详情';
+    };
+    actions.appendChild(btnDetail);
+    const h = document.createElement('h4'); h.className = 'pp-details-title'; h.textContent = '浏览器扩展安装步骤（番茄 / 晋江章节桥接必需）';
+    details.appendChild(h);
+    const steps = [
+      '点击下方「下载浏览器扩展」保存 zip，解压得到 fanqie-reader 文件夹；',
+      'Chrome 地址栏输入 chrome://extensions 并回车，打开右上角「开发者模式」；',
+      '点左上角「加载已解压的扩展程序」，选择刚解压的 fanqie-reader 文件夹；',
+      '回到 ChatNoGPT 打开番茄阅读会话，即可在番茄小说 / 晋江文学的章节页拉取正文。',
+    ];
+    steps.forEach((t, i) => {
+      const row = document.createElement('div'); row.className = 'pp-step';
+      const n = document.createElement('span'); n.className = 'pp-step-num'; n.textContent = String(i + 1);
+      const txt = document.createElement('span'); txt.textContent = t;
+      row.append(n, txt); details.appendChild(row);
+    });
+    if (p.download) {
+      const dl = document.createElement('a'); dl.className = 'pp-dl'; dl.href = p.download; dl.download = 'chatnogpt-extension.zip';
+      dl.textContent = '⬇ 下载浏览器扩展（Chrome / Edge）';
+      details.appendChild(dl);
+    }
+    const note = document.createElement('p'); note.className = 'pp-note';
+    note.textContent = '扩展只读取你本机浏览器里已登录站点的章节内容，不会保存网站密码；停用插件后阅读会话入口随之隐藏。';
+    details.appendChild(note);
+  }
+  card.append(head, desc, actions, details || '');
+  return card;
 }
 
 // 插件脚本动态加载：按 /api/me 返回的启用插件注入
@@ -2170,31 +2275,7 @@ function bind() {
       row.append(left, restore); archiveList.appendChild(row);
     }
     if (!archived.length) archiveList.textContent = '暂无归档聊天';
-    // 插件开关：基座可感知的插件目录，按用户启停
-    const plugTitle = document.createElement('h4'); plugTitle.textContent = '插件';
-    const plugList = document.createElement('div'); plugList.className = 'settings-archive-list';
-    if (true) {
-      try {
-        const d = await api('/api/plugins');
-        for (const p of d.plugins || []) {
-          const row = document.createElement('div'); row.className = 'settings-archive-row';
-          const label = document.createElement('span');
-          label.textContent = p.title + (p.desc ? ' · ' + p.desc : '');
-          const sw = document.createElement('button'); sw.type = 'button'; sw.textContent = p.enabled ? '已启用' : '已停用';
-          sw.onclick = async () => {
-            try {
-              await api('/api/plugins', { body: { action: p.enabled ? 'disable' : 'enable', name: p.name } });
-              sw.textContent = p.enabled ? '已停用' : '已启用';
-              toast(p.title + (p.enabled ? ' 已停用，刷新页面生效' : ' 已启用'));
-            } catch (e) { toast(e.message); }
-          };
-          row.append(label, sw); plugList.appendChild(row);
-        }
-      } catch (e) { const hintP = document.createElement('p'); hintP.className = 'settings-hint'; hintP.textContent = '插件列表需要登录后查看'; plugList.appendChild(hintP); }
-    } else {
-      const none = document.createElement('p'); none.className = 'settings-hint'; none.textContent = '暂无可管理插件'; plugList.appendChild(none);
-    }
-    panel.append(title, toggle, plugTitle, plugList, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
+    panel.append(title, toggle, archiveTitle, archiveHint, archiveList, done); overlay.appendChild(panel); root.appendChild(overlay);
     overlay.onclick = e => { if (e.target === overlay) root.replaceChildren(); };
   };
 
@@ -2204,6 +2285,8 @@ function bind() {
   };
   $('#sideMask').onclick = closeSidebarMobile;
   $('#btnNewConv').onclick = startNewConversation;
+  $('#btnPlugins').onclick = openPluginPage;
+  $('#btnPluginBack').onclick = closePluginPage;
   $('#btnRenameConv').onclick = () => {
     if (state.cur && state.curInfo) renameConv(state.cur, $('#convTitle').textContent);
   };

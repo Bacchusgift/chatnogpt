@@ -664,3 +664,35 @@ body.cover-on .msg-real.covered.flash::after {
 .proj-group .conv-entry .conv-item { padding-left: 24px; }
 .conv-item.room-item { color: #b7c9ff; }
 .conv-item.dragging { opacity: .45; }
+
+/* ---------- 插件管理页（侧栏"插件"入口，整页设置） ---------- */
+.plugin-page { flex: 1; min-height: 0; overflow-y: auto; padding: 30px clamp(18px, 6vw, 64px) 48px; }
+.pp-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 26px; }
+.pp-back { font-size: 20px; line-height: 1; padding: 6px 10px; border-radius: 9px; color: #b4b4b4; margin-top: 4px; }
+.pp-back:hover { background: rgba(255,255,255,.08); color: #fff; }
+.pp-head h2 { font-size: 24px; font-weight: 700; color: #fff; }
+.pp-head p { font-size: 13px; color: #9b9b9b; margin-top: 5px; }
+.pp-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; max-width: 860px; }
+.pp-card { background: #262626; border: 1px solid rgba(255,255,255,.07); border-radius: 14px; padding: 18px; align-self: start; }
+.pp-card-head { display: flex; align-items: center; gap: 12px; }
+.pp-icon { width: 42px; height: 42px; border-radius: 11px; background: #333; display: grid; place-items: center; font-size: 21px; flex: none; }
+.pp-title { font-size: 15.5px; font-weight: 600; color: #fff; }
+.pp-badge { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; flex: none; }
+.pp-badge.on { color: #4ade80; background: rgba(74,222,128,.12); }
+.pp-badge.off { color: #9b9b9b; background: rgba(255,255,255,.07); }
+.pp-desc { font-size: 13px; color: #b8b8b8; line-height: 1.65; margin: 12px 0 14px; }
+.pp-actions { display: flex; gap: 10px; }
+.pp-btn { padding: 7px 16px; border-radius: 9px; font-size: 14px; color: #d6d6d6; border: 1px solid rgba(255,255,255,.14); }
+.pp-btn:hover { background: rgba(255,255,255,.07); }
+.pp-btn.primary { background: #fff; color: #0d0d0d; border-color: #fff; font-weight: 600; }
+.pp-btn.primary:hover { background: #e3e3e3; }
+.pp-btn.ghost { border-color: transparent; color: #9b9b9b; }
+.pp-btn:disabled { opacity: .55; cursor: default; }
+.pp-details { display: none; margin-top: 16px; border-top: 1px solid rgba(255,255,255,.07); padding-top: 16px; }
+.pp-details.open { display: block; }
+.pp-details-title { font-size: 13.5px; font-weight: 600; color: #e6e6e6; margin-bottom: 12px; }
+.pp-step { display: flex; gap: 10px; font-size: 13px; color: #c9c9c9; line-height: 1.7; margin-bottom: 8px; }
+.pp-step-num { width: 20px; height: 20px; border-radius: 50%; background: #333; color: #bbb; display: grid; place-items: center; font-size: 12px; flex: none; margin-top: 2px; }
+.pp-dl { display: inline-block; margin: 10px 0 4px; padding: 9px 18px; border-radius: 10px; background: #fff; color: #0d0d0d; font-size: 14px; font-weight: 600; text-decoration: none; }
+.pp-dl:hover { background: #e3e3e3; }
+.pp-note { font-size: 12px; color: #8a8a8a; line-height: 1.7; margin-top: 10px; }
