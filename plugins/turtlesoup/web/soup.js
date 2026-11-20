@@ -76,8 +76,7 @@
     } else {
       CNGP.drawer.setPanel(null);
     }
-    tsRescanActions();
-    tsRescanActions();
+    CNGP.actions.refresh();
   }
 
   // ---- 游戏面板 ----
@@ -212,49 +211,24 @@
   });
 
   // ---- 主持人快捷回复：在他人消息的操作条上注入 是/不是/是也不是/无关 ----
-  // 快捷回复：沿用点赞/点踩的图标按钮形态，功能变为发出对应裁决
+  // 快捷裁决：CNGP.actions 注册表——覆盖基座点赞/点踩能力，追加两个新裁决
+  // （match 在按钮渲染时求值；游戏状态更新后调 CNGP.actions.refresh() 重建操作条）
   const tsThumbIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M7 10v10H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h3Zm0 0 4-7a2 2 0 0 1 2-1c1.1 0 2 .9 2 2v5h4a3 3 0 0 1 2.9 3.8l-1.7 6A3 3 0 0 1 17.3 21H7" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
   const tsBothIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5v17" stroke="currentColor" stroke-width="1.6"/></svg>';
   const tsIrrelevantIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M5.8 5.8l12.4 12.4" stroke="currentColor" stroke-width="1.6"/></svg>';
-  const TS_QUICKS = [
-    { label: '是', icon: tsThumbIcon },
-    { label: '不是', icon: tsThumbIcon, down: true },
-    { label: '是也不是', icon: tsBothIcon },
-    { label: '无关', icon: tsIrrelevantIcon },
-  ];
-  function tsAugmentActions(row) {
-    if (!isSoupCandidate() || !gs.game || gs.game.phase !== 1 || !gs.game.is_host) return;
-    const actions = row.querySelector('.msg-actions');
-    if (!actions || actions.querySelector('.ts-quick')) return;
-    // 摘掉原点赞/点踩（位置与形态保留，语义变为快捷裁决），保留复制/刷新
-    actions.querySelectorAll('button[aria-pressed]').forEach(b => b.remove());
-    const replyTo = row.dataset.mid || '';
-    for (const q of TS_QUICKS) {
-      const b = document.createElement('button');
-      b.type = 'button'; b.title = q.label; b.setAttribute('aria-label', q.label); b.innerHTML = q.icon;
-      b.className = 'ts-quick' + (q.down ? ' thumb-down' : '');
-      b.onclick = () => sendText(q.label, replyTo);
-      actions.appendChild(b);
-    }
+  function tsVerdictOk() {
+    return isSoupCandidate() && gs.game && gs.game.phase === 1 && gs.game.is_host;
   }
-  function tsRescanActions() {
-    document.querySelectorAll('#messages .msg-actions').forEach(a => {
-      const row = a.closest('.msg-real, .msg-ai');
-      if (row) tsAugmentActions(row);
-    });
+  function tsSendVerdict(ctx2, label) {
+    CNGP.send(label, { replyTo: ctx2.msgId });
   }
-  // ---- 基座 hook：cngp:message-actions（消息操作条渲染完成） ----
-  CNGP.on('message-actions', detail => {
-    try { tsAugmentActions(detail.row); } catch (err) { }
-  });
-  // 兜底：消息行可能在面板状态加载完成之后才流入（异步渲染），DOM 观察器补挂快捷按钮
-  new MutationObserver(muts => {
-    if (!isSoupCandidate() || !gs.game || gs.game.phase !== 1 || !gs.game.is_host) return;
-    for (const m of muts) {
-      for (const n of m.addedNodes) {
-        if (n.nodeType !== 1) continue;
-        if (n.querySelector && n.querySelector('.msg-actions')) tsAugmentActions(n);
-      }
-    }
-  }).observe(document.body, { childList: true, subtree: true });
+  CNGP.actions.register({ id: 'ts-verdict-up', placement: 'replace:vote-up', className: 'ts-quick',
+    icon: tsThumbIcon, title: '是', match: () => tsVerdictOk(), onClick: c => tsSendVerdict(c, '是') });
+  CNGP.actions.register({ id: 'ts-verdict-down', placement: 'replace:vote-down', className: 'ts-quick thumb-down',
+    icon: tsThumbIcon, title: '不是', match: () => tsVerdictOk(), onClick: c => tsSendVerdict(c, '不是') });
+  CNGP.actions.register({ id: 'ts-verdict-both', placement: 'append', className: 'ts-quick',
+    icon: tsBothIcon, title: '是也不是', match: () => tsVerdictOk(), onClick: c => tsSendVerdict(c, '是也不是') });
+  CNGP.actions.register({ id: 'ts-verdict-none', placement: 'append', className: 'ts-quick',
+    icon: tsIrrelevantIcon, title: '无关', match: () => tsVerdictOk(), onClick: c => tsSendVerdict(c, '无关') });
+
 })();

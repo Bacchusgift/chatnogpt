@@ -63,6 +63,31 @@ type Plugin interface {
 | `CNGP.on(name, fn)` | 订阅 hook 事件（见下表） |
 | `CNGP.roomMode({id, label})` | 贡献群聊对话模式 |
 | `CNGP.drawer.setPanel({title, render(el, ctx)})` | 右侧抽屉面板：当前会话命中时头部出现切换按钮、抽屉自动展开；面板刷新经 `CNGP.drawer.refresh()`；用户可收起（收起的会话内不再自动展开） |
+| `CNGP.actions.register(spec)` | **操作条按钮自定义**（可覆盖基座能力按钮，详见下节） |
+| `CNGP.actions.refresh()` | 插件状态变化后重建既有消息的操作条 |
+
+### 操作条按钮自定义（能力覆盖）
+
+基座操作条按钮带能力 id：`copy` / `refresh` / `vote-up` / `vote-down` / `reply` / `react`。
+插件注册 spec 改写它们：
+
+```js
+CNGP.actions.register({
+  id: 'ts-verdict-up',            // 插件内唯一
+  placement: 'replace:vote-up',   // 'append' | 'replace:<能力id>' | 'hide:<能力id>'
+  icon: '<svg…>', title: '是', className: 'ts-quick',   // 可选样式
+  match: ctx => /* conv/msg/游戏状态 */,           // 渲染时求值，false 则该消息不显示
+  onClick: ctx => CNGP.send('是', { replyTo: ctx.msgId }),
+});
+```
+
+规则：
+- `replace:` 与 `hide:` 针对基座能力 id（vote-up/vote-down 等位置与形态保留、语义改写）；
+  同一能力被多个插件改写时，**后注册者覆盖先注册者**（控制台告警提示冲突）
+- `match` 在按钮渲染时求值；插件状态变化后调 `CNGP.actions.refresh()` 重建操作条
+- 引用回复建议：裁决/答复类按钮用 `CNGP.send(text, { replyTo: ctx.msgId })`，
+  让所有人看到回应针对哪条消息
+- 事件 `message-actions` 保留为兼容通道（任意 DOM 增强），但按钮定制应走注册表
 
 ### Hook 事件（经 `CNGP.on` 订阅）
 

@@ -1713,7 +1713,7 @@ function makeMessageAction(label, icon) {
   return button;
 }
 
-function addMessageVotes(actions) {
+function addMessageVotes(actions, base) {
   const up = makeMessageAction('点赞', messageThumbIcon);
   const down = makeMessageAction('点踩', messageThumbIcon);
   down.classList.add('thumb-down');
@@ -1725,32 +1725,95 @@ function addMessageVotes(actions) {
       if (!selected) button.setAttribute('aria-pressed', 'true');
     };
   }
+  base['vote-up'] = up;
+  base['vote-down'] = down;
   actions.append(up, down);
 }
 
 const replyIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><path d="M9 14 4 9l5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const reactIcon = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 14s1.2 1.8 3.5 1.8S15.5 14 15.5 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M9 9.5v1M15 9.5v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 
+// 操作条能力 id：copy / refresh / vote-up / vote-down / reply / react
+// 插件经 CNGP.actions.register 自定义：placement = 'append' | 'replace:<id>' | 'hide:<id>'
+// 同一目标被多个插件改写时，后注册者覆盖先注册者（控制台告警提示冲突）
 function addAIActions(row, content) {
+  const mid = row.dataset.mid;
   const actions = document.createElement('div'); actions.className = 'msg-actions';
+  const base = {};
   const copy = makeMessageAction('复制', messageCopyIcon);
-  // 插件可通过监听 cngp:message-actions 向 actions 追加按钮（契约见 plugins/README.md）
+  copy.dataset.actionId = 'copy';
   copy.onclick = async () => {
     try { await navigator.clipboard.writeText(content); toast('已复制'); }
     catch { toast('复制失败'); }
   };
+  base['copy'] = copy;
   const refresh = makeMessageAction('刷新', messageRefreshIcon);
+  refresh.dataset.actionId = 'refresh';
   refresh.onclick = () => {};
+  base['refresh'] = refresh;
   actions.append(copy, refresh);
-  addMessageVotes(actions);
-  // 平台能力：引用回复 + 表情回应（iMessage tapback 式反馈）
+  addMessageVotes(actions, base);
   const reply = makeMessageAction('回复', replyIcon);
-  reply.onclick = () => setReplyTo(row.dataset.mid, row.dataset.nickname, content);
+  reply.dataset.actionId = 'reply';
+  reply.onclick = () => setReplyTo(mid, row.dataset.nickname, content);
+  base['reply'] = reply;
   const react = makeMessageAction('表情回应', reactIcon);
-  react.onclick = e => { e.stopPropagation(); openReactPicker(react, row.dataset.mid); };
+  react.dataset.actionId = 'react';
+  react.onclick = e => { e.stopPropagation(); openReactPicker(react, mid); };
+  base['react'] = react;
   actions.append(reply, react);
+  applyActionSpecs(actions, base, {
+    conv: state.curInfo, msgId: mid, nickname: row.dataset.nickname, content, isOwn: false, row,
+  });
   row.appendChild(actions);
   window.dispatchEvent(new CustomEvent('cngp:message-actions', { detail: { row, actions, content } }));
+}
+
+function applyActionSpecs(actions, base, ctx) {
+  const registry = (window.CNGP && window.CNGP.actionsRegistry) || [];
+  for (const spec of registry) {
+    try {
+      if (spec.match && !spec.match(ctx)) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.title = spec.title || '';
+      btn.setAttribute('aria-label', spec.title || '');
+      if (spec.icon) btn.innerHTML = spec.icon;
+      if (spec.className) btn.className = spec.className;
+      btn.dataset.actionId = spec.id;
+      btn.onclick = () => { try { spec.onClick(ctx); } catch (e) { toast(e.message); } };
+      const pl = spec.placement || 'append';
+      if (pl === 'append') {
+        actions.appendChild(btn);
+      } else if (pl.startsWith('replace:')) {
+        const id = pl.slice(8);
+        const target = base[id];
+        if (!target) continue;
+        if (base[id] && base[id].dataset.actionId !== id) {
+          console.warn('[CNGP] 按钮 ' + id + ' 已被其他插件覆盖：' + spec.id);
+        }
+        target.replaceWith(btn);
+        base[id] = btn;
+      } else if (pl.startsWith('hide:')) {
+        const id = pl.slice(5);
+        const target = base[id];
+        if (target) target.remove();
+      }
+    } catch (e) { console.warn('[CNGP] 按钮注册应用失败', spec && spec.id, e); }
+  }
+}
+
+// 插件注册/状态变化后重建既有消息的操作条（幂等：整条重建）
+function rebuildActionBars() {
+  document.querySelectorAll('#messages .msg-real').forEach(row => {
+    const mid = row.dataset.mid;
+    const src = (state.msgIndex || {})[mid];
+    if (!src) return;
+    const old = row.querySelector('.msg-actions');
+    if (old) old.remove();
+    addAIActions(row, src.content);
+    renderReactions(row, mid);
+  });
 }
 
 function appendAIStatic(nickname, content, ts, msgId, imageID, m = null) {
@@ -2904,6 +2967,15 @@ window.CNGP = {
     api('/api/conversations/' + encodeURIComponent(conv) + '/send',
       { body: { content: text, client_msg_id: cmid, reply_to: opts.replyTo || '' } }).catch(e => toast(e.message));
     return true;
+  },
+  // 操作条按钮自定义：placement 'append' | 'replace:<能力id>' | 'hide:<能力id>'
+  // 能力 id：copy / refresh / vote-up / vote-down / reply / react
+  actions: {
+    register: spec => {
+      (window.CNGP.actionsRegistry = window.CNGP.actionsRegistry || []).push(spec);
+      if (typeof rebuildActionBars === 'function') rebuildActionBars();
+    },
+    refresh: () => { if (typeof rebuildActionBars === 'function') rebuildActionBars(); },
   },
   // 对单条消息切换表情回应（iMessage tapback 式反馈）
   react(msgID, emoji) {
