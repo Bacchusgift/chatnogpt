@@ -28,7 +28,7 @@ const (
 	Name       = "turtle-soup"
 	Title      = "海龟汤"
 	Desc       = "群聊海龟汤推理：主持人出题，玩家提问，快捷回复「是 / 不是 / 是也不是 / 无关」"
-	FrontendJS = "/plugins/turtle-soup/soup.js?v=2.3.1"
+	FrontendJS = "/plugins/turtle-soup/soup.js?v=2.3.2"
 )
 
 // WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。

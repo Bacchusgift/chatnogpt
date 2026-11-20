@@ -107,9 +107,20 @@
     riddleEl.textContent = '谜面：' + gs.game.riddle;
     p.append(tag, riddleEl);
     if (gs.game.answer) {
-      const a = document.createElement('div'); a.className = 'ts-answer';
-      a.textContent = '谜底：' + gs.game.answer;
-      p.appendChild(a);
+      // 谜底伪装：与消息同构的覆盖行（密文 + 悬停透视），跟随思考伪装开关，不明文展示
+      const arow = document.createElement('div');
+      arow.className = 'msg-ai covered ts-answer-row';
+      arow.style.margin = '10px 0 0';
+      const rw = document.createElement('div'); rw.className = 'real-wrap';
+      const abody = document.createElement('div'); abody.className = 'ai-body';
+      abody.textContent = '谜底：' + gs.game.answer;
+      rw.appendChild(abody); arow.appendChild(rw);
+      arow.dataset.msgKey = 'ts-ans-' + gs.game.story_id;   // 稳定密文
+      arow.dataset.nickname = '谜底';
+      arow.appendChild(makeCoverLayer(false));
+      coverTextInto(arow);
+      if (state.coverMode) { arow.classList.add('covered'); bindFlashlight(arow); }
+      p.appendChild(arow);
     } else {
       const h = document.createElement('div'); h.className = 'ts-hint';
       h.textContent = gs.game.is_host
