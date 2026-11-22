@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"chatnogpt/plugins/dixit"
 	"chatnogpt/plugins/novelreader"
 	"chatnogpt/plugins/pluginbase"
 	"chatnogpt/plugins/turtlesoup"
+	"chatnogpt/plugins/undercover"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -235,6 +237,10 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 	// 插件注册：新插件实现 pluginbase.Plugin 后在此登记一次，基座其余处零感知
 	pluginbase.Register(novelPlugin)
 	pluginbase.Register(turtlesoup.New(turtlesoup.Config{DB: pluginDB, Dir: s.store.Dir()}))
+	dixitPlugin := dixit.New(dixit.Config{DB: pluginDB, Dir: s.store.Dir()})
+	ucPlugin := undercover.New(undercover.Config{DB: pluginDB, Dir: s.store.Dir()})
+	pluginbase.Register(dixitPlugin)
+	pluginbase.Register(ucPlugin)
 	for _, pl := range pluginbase.All() {
 		pl := pl
 		meta := pl.Meta()

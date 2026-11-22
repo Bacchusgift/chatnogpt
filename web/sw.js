@@ -1,7 +1,7 @@
 // ChatNoGPT Service Worker：只缓存应用外壳与带版本号的静态资源。
 // /api/、/ws、/downloads/ 一律直连，聊天数据永不落盘（伪装隐私优先）。
 // 版本号与 web/index.html 的资源 ?v= 同步更新。
-const VERSION = 'v2.4.3';
+const VERSION = 'v2.5.0';
 const SHELL_CACHE = 'cngp-shell-' + VERSION;
 const ASSET_CACHE = 'cngp-asset-' + VERSION;
 
