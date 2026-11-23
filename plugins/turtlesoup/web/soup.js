@@ -206,7 +206,7 @@
   CNGP.on('room-created', detail => {
     if (detail && detail.mode === 'turtle-soup' && detail.conv) {
       CNGP.api(API + '/rooms', { body: { conv_id: detail.conv.id } })
-        .then(() => { tsOnConv(detail.conv.id); })
+        .then(() => { tsOnConv(detail.conv.id); tsRefresh(); })
         .catch(() => {});
       if (ctx().me && detail.conv.creator_id === ctx().me.id) tsOpenStoryPicker(detail.conv.id);
     }
