@@ -592,7 +592,8 @@ function magnifierSVG(size) {
   return s;
 }
 
-function openSearch() {
+function openSearch(scope = '') {
+  if (scope === 'current' && !state.cur) { toast('请先打开一个会话'); return; }
   if (searchUI) { closeSearch(); return; }
   const root = $('#modalRoot');
   const overlay = document.createElement('div');
@@ -604,7 +605,7 @@ function openSearch() {
   box.append(magnifierSVG(17));
   const input = document.createElement('input');
   input.id = 'searchInput';
-  input.placeholder = '搜索消息…';
+  input.placeholder = scope === 'current' ? '搜索当前会话…' : '搜索消息…';
   input.autocomplete = 'off'; input.spellcheck = false;
   const esc = document.createElement('kbd'); esc.textContent = 'Esc';
   box.append(input, esc);
@@ -616,7 +617,7 @@ function openSearch() {
   panel.append(box, results, foot);
   overlay.appendChild(panel);
   root.appendChild(overlay);
-  searchUI = { overlay, panel, input, results, foot };
+  searchUI = { overlay, panel, input, results, foot, convID: scope === 'current' ? state.cur : '' };
   overlay.onclick = e => { if (e.target === overlay) closeSearch(); };
   input.addEventListener('input', () => {
     clearTimeout(searchDebounce);
@@ -646,18 +647,26 @@ async function doSearch(q) {
   const my = ++searchSeq;
   searchQuery = q;
   if (!searchUI) return;
-  if (!q) { searchHits = []; searchActive = 0; paintSearchEmpty('输入关键词搜索历史消息'); return; }
+  if (!q) { searchHits = []; searchActive = 0; searchUI.foot.textContent = '↑↓ 选择 · Enter 打开 · Esc 关闭'; paintSearchEmpty('输入关键词搜索历史消息'); return; }
   searchUI.foot.textContent = '搜索中…';
   try {
-    const d = await api('/api/search?q=' + encodeURIComponent(q));
+    let d;
+    if (searchUI.convID && searchUI.convID.startsWith('novel:')) {
+      const rows = [...document.querySelectorAll('#messages .msg-own, #messages .novel-ai')];
+      d = { hits: rows.map(row => ({ conv_id: searchUI.convID, title: $('#convTitle').textContent, row, message: { content: (row.querySelector('.bubble, .ai-body')?.textContent || ''), ts: Number(row.dataset.lastTs || 0) } })).filter(hit => hit.message.content.toLowerCase().includes(q.toLowerCase())).reverse().slice(0, 100) };
+    } else {
+      const base = searchUI.convID ? '/api/conversations/' + encodeURIComponent(searchUI.convID) + '/search' : '/api/search';
+      d = await api(base + '?q=' + encodeURIComponent(q));
+    }
     if (my !== searchSeq || !searchUI) return;
     searchHits = d.hits || [];
+    searchUI.foot.textContent = '↑↓ 选择 · Enter 打开 · Esc 关闭';
     searchActive = 0;
     if (!searchHits.length) paintSearchEmpty('没有找到包含“' + q + '”的消息');
     else paintSearchHits();
   } catch (e) {
     if (my !== searchSeq || !searchUI) return;
-    searchUI.foot.textContent = '搜索需要连接数据库后使用';
+    searchUI.foot.textContent = searchUI.convID ? '搜索失败：' + e.message : '搜索需要连接数据库后使用';
   }
 }
 
@@ -680,7 +689,7 @@ function paintSearchHits() {
     b.className = 'search-hit' + (i === searchActive ? ' active' : '');
     const title = document.createElement('div');
     title.className = 'h-title';
-    title.textContent = hit.title + ' · ' + fullStamp(hit.message.ts);
+    title.textContent = hit.title + (hit.message.ts ? ' · ' + fullStamp(hit.message.ts) : '');
     const snippet = document.createElement('div');
     snippet.className = 'h-snippet';
     snippet.append(searchSnippet(hit.message.content || '', searchQuery));
@@ -721,8 +730,14 @@ function openSearchHit(i) {
   if (!hit) return;
   closeSearch();
   (async () => {
+    if (hit.row) { if (state.cur === hit.conv_id && hit.row.isConnected) { hit.row.scrollIntoView({ block: 'center', behavior: 'smooth' }); hit.row.classList.add('search-flash'); setTimeout(() => hit.row.classList.remove('search-flash'), 2200); } return; }
     if (state.cur !== hit.conv_id) await selectConv(hit.conv_id);
-    timeScrollToMessage(hit.message.id);
+    const id = hit.conv_id;
+    while (state.cur === id && !document.querySelector('#messages [data-mid="' + CSS.escape(hit.message.id) + '"]') && !state.historyDone && state.firstMsg) {
+      if (state.historyLoading) await new Promise(resolve => setTimeout(resolve, 50));
+      else { const before = state.firstMsg.id; await loadOlder(); if (state.firstMsg?.id === before && !state.historyLoading) break; }
+    }
+    if (state.cur === id) timeScrollToMessage(hit.message.id);
   })();
 }
 
@@ -1225,7 +1240,9 @@ function createRoomModal() {
   const lblMode = document.createElement('label');
   lblMode.className = 'rmodal-label';
   lblMode.textContent = '对话模式';
-  const extraModes = Array.isArray(window.cngpRoomModes) ? window.cngpRoomModes.filter(m => m && m.id && m.label) : [];
+  const runtimeModes = Array.isArray(window.cngpRoomModes) ? window.cngpRoomModes : [];
+  const catalogModes = (state.pluginCatalog || []).filter(p => p.enabled).flatMap(p => p.room_modes || []);
+  const extraModes = [...new Map([...catalogModes, ...runtimeModes].filter(m => m && m.id && m.label).map(m => [m.id, m])).values()];
   let roomMode = '';
   const modeRow = document.createElement('div');
   modeRow.className = 'rmodal-seg';
@@ -1539,10 +1556,13 @@ async function appendImage(parent, id) {
     img.src = await loadImageURL(id, token);
   } catch { img.alt = '图片加载失败'; return; }
   const peerCovered = () => state.coverMode && !!img.closest('.msg-ai');
-  img.onclick = () => {
-    // 密文模式的对方图片只能通过原位圆孔查看，不能弹出无遮罩原图。
-    if (!peerCovered()) openImageLightbox(img.src);
-  };
+  img.onclick = e => { e.stopPropagation(); openImageLightbox(img.src); };
+  const row = img.closest('.msg-ai');
+  if (row) row.addEventListener('click', e => {
+    if (!state.coverMode || !img.src || e.target.closest('button, a')) return;
+    const r = img.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) openImageLightbox(img.src);
+  });
   img.oncontextmenu = e => { if (peerCovered()) e.preventDefault(); };
   img.ondragstart = e => { if (peerCovered()) e.preventDefault(); };
   // 偶发裂图兑底：缓存的 blob URL 失效时，丢弃缓存重新拉取一次。
@@ -1558,17 +1578,24 @@ function openImageLightbox(src) {
   if (!src) return;
   document.querySelector('.image-lightbox')?.remove();
   const overlay = document.createElement('div'); overlay.className = 'image-lightbox';
-  overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true');
-  overlay.setAttribute('aria-label', '图片预览');
-  const image = document.createElement('img'); image.src = src; image.alt = '聊天图片预览';
-  const close = document.createElement('button'); close.type = 'button';
-  close.className = 'image-lightbox-close'; close.setAttribute('aria-label', '关闭预览'); close.textContent = '×';
+  overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', '图片预览');
+  const viewport = document.createElement('div'); viewport.className = 'image-lightbox-viewport';
+  const image = document.createElement('img'); image.src = src; image.alt = '聊天图片预览'; viewport.appendChild(image);
+  const controls = document.createElement('div'); controls.className = 'image-lightbox-controls';
+  const minus = document.createElement('button'); minus.type = 'button'; minus.textContent = '−'; minus.setAttribute('aria-label', '缩小图片');
+  const percent = document.createElement('span');
+  const plus = document.createElement('button'); plus.type = 'button'; plus.textContent = '＋'; plus.setAttribute('aria-label', '放大图片');
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = '重置'; reset.setAttribute('aria-label', '重置图片大小');
+  let scale = 1;
+  const zoom = value => { scale = Math.max(.25, Math.min(4, value)); image.style.transform = 'scale(' + scale + ')'; percent.textContent = Math.round(scale * 100) + '%'; };
+  minus.onclick = () => zoom(scale / 1.25); plus.onclick = () => zoom(scale * 1.25); reset.onclick = () => zoom(1);
+  viewport.addEventListener('wheel', e => { e.preventDefault(); zoom(scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); }, { passive: false });
+  controls.append(minus, percent, plus, reset); zoom(1);
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'image-lightbox-close'; close.setAttribute('aria-label', '关闭预览'); close.textContent = '×';
   const dismiss = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = event => { if (event.key === 'Escape') dismiss(); };
-  close.onclick = dismiss;
-  overlay.onclick = event => { if (event.target === overlay) dismiss(); };
-  overlay.append(image, close); document.body.appendChild(overlay);
-  document.addEventListener('keydown', onKey); close.focus();
+  close.onclick = dismiss; overlay.onclick = event => { if (event.target === overlay || event.target === viewport) dismiss(); };
+  overlay.append(viewport, controls, close); document.body.appendChild(overlay); document.addEventListener('keydown', onKey); close.focus();
 }
 
 function appendOwn(content, ts, msgId, imageID, localID = '', m = null) {
@@ -2184,7 +2211,7 @@ function handleEvent(ev) {
       if (ev.client_msg_id && state.pending.has(ev.client_msg_id)) {
         state.pending.delete(ev.client_msg_id);
         const ownRow = [...document.querySelectorAll('#messages .msg-own')].find(row => row.dataset.clientMsgId === ev.client_msg_id);
-        if (ownRow) ownRow.dataset.msgId = ev.id;
+        if (ownRow) { ownRow.dataset.msgId = ev.id; ownRow.dataset.mid = ev.id; }
         rememberRead(ev.id);
         return;
       }
@@ -2585,7 +2612,8 @@ function doSend(payload) {
   state.pending.add(cmid);
   appendOwn(payload.text, Math.floor(Date.now() / 1000), null, payload.imageID, '',
     payload.replyTo ? { reply_to: payload.replyTo, reactions: null } : null).dataset.clientMsgId = cmid;
-  scrollFollow();
+  scrollBottom(true);
+  requestAnimationFrame(() => scrollBottom(true));
   btnSend.disabled = true;
   state.ws.send(JSON.stringify({ type: 'msg', content: payload.text,
     image_id: payload.imageID || '', client_msg_id: cmid, reply_to: payload.replyTo || '' }));
@@ -2638,6 +2666,7 @@ async function send() {
         { body: { content: text, image_id: imageID, client_msg_id: cmid, reply_to: replyTo } });
       if (state.cur !== destConv) loadConvs(true).catch(() => {});
     }
+    if (state.cur === destConv) { scrollBottom(true); requestAnimationFrame(() => { if (state.cur === destConv) scrollBottom(true); }); }
     if (input.value === text) { input.value = ''; autoGrow(); }
     if (replyTo) clearReplyTo();
     if (attachment === state.attachment) removeAttachment();
@@ -2838,23 +2867,43 @@ function bind() {
     state.drawerClosedFor = state.cur;
     renderDrawer();
   };
-  $('#btnGroupMembers').onclick = () => {
-    const conv = state.curInfo;
-    if (!conv || conv.kind !== 1) return;
-    closeModelMenu();
-    accessMenu.classList.add('hidden');
-    effortMenu.classList.add('hidden');
-    const { panel, cancel } = openPicker('群聊成员 · ' + conv.member_count + ' 人');
-    const members = conv.members || [];
-    for (const m of members) {
-      const item = document.createElement('div');
-      item.className = 'model-item';
-      const name = document.createElement('div');
-      name.className = 'm-name';
-      name.textContent = m.nickname + (m.id === state.me.id ? '（我）' : '');
-      item.appendChild(name);
-      panel.insertBefore(item, cancel);
-    }
+  $('#btnGroupMembers').onclick = async () => {
+    const id = state.cur;
+    if (!state.curInfo || state.curInfo.kind !== 1) return;
+    closeModelMenu(); accessMenu.classList.add('hidden'); effortMenu.classList.add('hidden');
+    try {
+      const d = await api('/api/conversations/' + encodeURIComponent(id));
+      if (state.cur !== id) return;
+      state.curInfo = d.conversation;
+      const { panel, cancel, close } = openPicker('群聊成员 · ' + d.conversation.member_count + ' 人');
+      const owner = d.conversation.creator_id === state.me.id;
+      const status = document.createElement('p'); status.className = 'member-status';
+      for (const m of d.conversation.members || []) {
+        const row = document.createElement('div'); row.className = 'member-row';
+        const name = document.createElement('span'); name.textContent = m.nickname + (m.id === state.me.id ? '（我）' : '') + (m.id === d.conversation.creator_id ? '（群主）' : '');
+        row.appendChild(name);
+        if (owner && m.id !== state.me.id) {
+          const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除'; remove.className = 'member-remove';
+          remove.onclick = () => CNGP.confirm({ title: '移除群成员', body: '确定将 ' + m.nickname + ' 移出群聊吗？', okText: '移除', danger: true, onOk: async () => {
+            try { await api('/api/conversations/' + encodeURIComponent(id) + '/members/' + encodeURIComponent(m.id), { method: 'DELETE' }); if (state.cur === id) { close(); await selectConv(id); $('#btnGroupMembers').click(); } }
+            catch (e) { toast(e.message); }
+          }});
+          row.appendChild(remove);
+        }
+        panel.insertBefore(row, cancel);
+      }
+      if (owner) {
+        const form = document.createElement('form'); form.className = 'member-add';
+        const input = document.createElement('input'); input.placeholder = '输入成员名称'; input.setAttribute('aria-label', '添加成员名称'); input.required = true;
+        const add = document.createElement('button'); add.type = 'submit'; add.textContent = '添加成员';
+        form.append(input, add); form.onsubmit = async e => { e.preventDefault(); const name = input.value.trim(); if (!name) return; add.disabled = true;
+          try { await api('/api/conversations/' + encodeURIComponent(id) + '/members', { body: { name } }); if (state.cur === id) { close(); await selectConv(id); $('#btnGroupMembers').click(); } }
+          catch (err) { status.textContent = err.message; add.disabled = false; }
+        };
+        panel.insertBefore(form, cancel);
+      }
+      panel.insertBefore(status, cancel);
+    } catch (e) { toast(e.message); }
   };
   $('#btnRenameConv').onclick = () => {
     if (state.cur && state.curInfo) renameConv(state.cur, $('#convTitle').textContent);
@@ -2893,7 +2942,8 @@ function bind() {
     if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
   });
 
-  $('#btnSearch').onclick = openSearch;
+  $('#btnSearch').onclick = () => openSearch();
+  $('#btnConvSearch').onclick = () => openSearch('current');
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
       e.preventDefault();

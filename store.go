@@ -189,8 +189,11 @@ type Store interface {
 	HistoryMessages(convID, userID string, afterTS, beforeTS int64, beforeID string, limit int) ([]*Message, error)
 	CreateRoom(ownerID, title string, inviteNames []string) (convBrief, []string, error)
 	RoomMembers(convID, userID string) ([]string, error)
+	AddRoomMember(convID, actorID, name string) error
+	RemoveRoomMember(convID, actorID, memberID string) error
 	SetPluginDisabled(userID, plugin string, disabled bool) error
 	SearchMessages(userID, query string, limit int) ([]SearchHit, error)
+	SearchConversation(convID, userID, query string, limit int) ([]SearchHit, error)
 	CreateProject(ownerID, name string) (Project, error)
 	ListProjects(ownerID string) []Project
 	RenameProject(userID, projectID, name string) (Project, error)

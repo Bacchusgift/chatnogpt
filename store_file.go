@@ -43,7 +43,7 @@ type fileConv struct {
 	Kind      int                `json:"kind"`
 	Members   map[string]*Member `json:"members"`
 	Messages  []*Message         `json:"messages"`
-	Reactions []*MsgReaction      `json:"reactions,omitempty"`
+	Reactions []*MsgReaction     `json:"reactions,omitempty"`
 }
 
 func newFileStore(dir string) (*fileStore, error) {
@@ -889,6 +889,52 @@ func (s *fileStore) CreateRoom(ownerID, title string, inviteNames []string) (con
 	return convBrief{ID: c.ID, Title: title, Code: c.Code, Kind: 1}, missing, nil
 }
 
+func (s *fileStore) AddRoomMember(convID, actorID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.Kind != 1 || c.CreatorID != actorID || c.Members[actorID] == nil || c.Members[actorID].DeletedAt != 0 {
+		return ErrForbidden
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	id := s.d.ByNick[name]
+	if id == "" {
+		id = s.d.ByName[name]
+	}
+	if id == "" {
+		return ErrNotFound
+	}
+	if m := c.Members[id]; m != nil && m.DeletedAt == 0 {
+		return errors.New("该成员已在群聊中")
+	}
+	c.Members[id] = &Member{UserID: id, Title: c.Title, JoinedAt: now()}
+	s.saveLocked()
+	return nil
+}
+func (s *fileStore) RemoveRoomMember(convID, actorID, memberID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.Kind != 1 || c.CreatorID != actorID || c.Members[actorID] == nil || c.Members[actorID].DeletedAt != 0 {
+		return ErrForbidden
+	}
+	if memberID == c.CreatorID {
+		return errors.New("不能移除群主")
+	}
+	if c.Members[memberID] == nil {
+		return ErrNotFound
+	}
+	delete(c.Members, memberID)
+	s.saveLocked()
+	return nil
+}
+
 func (s *fileStore) RoomMembers(convID, userID string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -916,6 +962,32 @@ func (s *fileStore) RoomMembers(convID, userID string) ([]string, error) {
 }
 
 // ---- custom reading models ----
+
+// SearchConversation searches the complete retained history of one authorized conversation.
+func (s *fileStore) SearchConversation(convID, userID, query string, limit int) ([]SearchHit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.d.Convs[convID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	member := c.Members[userID]
+	if member == nil || member.DeletedAt != 0 {
+		return nil, ErrForbidden
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	query = strings.ToLower(query)
+	out := []SearchHit{}
+	for i := len(c.Messages) - 1; i >= 0 && len(out) < limit; i-- {
+		m := c.Messages[i]
+		if strings.Contains(strings.ToLower(m.Content), query) {
+			out = append(out, SearchHit{ConvID: convID, Title: member.Title, Message: *m})
+		}
+	}
+	return out, nil
+}
 
 // ---- search (database-only capability) ----
 

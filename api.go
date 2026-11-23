@@ -520,6 +520,52 @@ func (s *server) handleConvSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case len(parts) == 2 && parts[1] == "members" && r.Method == http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.store.AddRoomMember(convID, u.ID, req.Name); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		detail, err := s.store.ConvDetail(convID, u.ID)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
+	case len(parts) == 3 && parts[1] == "members" && r.Method == http.MethodDelete:
+		if err := s.store.RemoveRoomMember(convID, u.ID, parts[2]); err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		s.hub.removeUser(convID, parts[2])
+		detail, err := s.store.ConvDetail(convID, u.ID)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conversation": detail})
+	case len(parts) == 2 && parts[1] == "search" && r.Method == http.MethodGet:
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		if len([]rune(q)) > 200 {
+			writeErr(w, http.StatusBadRequest, errors.New("关键词过长"))
+			return
+		}
+		if q == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"hits": []SearchHit{}})
+			return
+		}
+		hits, err := s.store.SearchConversation(convID, u.ID, q, 100)
+		if err != nil {
+			writeErr(w, statusOf(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"hits": hits})
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		detail, err := s.store.ConvDetail(convID, u.ID)
 		if err != nil {

@@ -1021,6 +1021,72 @@ func (s *dbStore) CreateRoom(ownerID, title string, inviteNames []string) (convB
 	return convBrief{ID: id, Title: title, Code: code, Kind: 1}, missing, nil
 }
 
+func (s *dbStore) AddRoomMember(convID, actorID, name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner, title string
+	var kind int
+	err = tx.QueryRow(`SELECT c.creator_id,c.title,c.kind FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? AND cm.deleted_at=0 WHERE c.id=? FOR UPDATE`, actorID, convID).Scan(&owner, &title, &kind)
+	if err != nil {
+		return ErrForbidden
+	}
+	if kind != 1 || owner != actorID {
+		return ErrForbidden
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	var id string
+	if err = tx.QueryRow(`SELECT id FROM users WHERE nickname_lc=? OR username_lc=? LIMIT 1`, name, name).Scan(&id); err != nil {
+		return ErrNotFound
+	}
+	var deleted int64
+	err = tx.QueryRow(`SELECT deleted_at FROM conv_members WHERE conv_id=? AND user_id=?`, convID, id).Scan(&deleted)
+	if err == nil && deleted == 0 {
+		return errors.New("该成员已在群聊中")
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		_, err = tx.Exec(`UPDATE conv_members SET deleted_at=0,archived_at=0,unread_count=0,title=?,joined_at=? WHERE conv_id=? AND user_id=?`, title, now(), convID, id)
+	} else {
+		_, err = tx.Exec(`INSERT INTO conv_members (conv_id,user_id,title,joined_at) VALUES (?,?,?,?)`, convID, id, title, now())
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *dbStore) RemoveRoomMember(convID, actorID, memberID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var owner string
+	var kind int
+	if err = tx.QueryRow(`SELECT c.creator_id,c.kind FROM convs c JOIN conv_members cm ON cm.conv_id=c.id AND cm.user_id=? AND cm.deleted_at=0 WHERE c.id=? FOR UPDATE`, actorID, convID).Scan(&owner, &kind); err != nil {
+		return ErrForbidden
+	}
+	if kind != 1 || owner != actorID {
+		return ErrForbidden
+	}
+	if memberID == owner {
+		return errors.New("不能移除群主")
+	}
+	res, err := tx.Exec(`DELETE FROM conv_members WHERE conv_id=? AND user_id=?`, convID, memberID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
 // RoomMembers lists the display names inside a room.
 func (s *dbStore) RoomMembers(convID, userID string) ([]string, error) {
 	if _, err := s.GetConv(convID, userID); err != nil {
@@ -1045,6 +1111,31 @@ func (s *dbStore) RoomMembers(convID, userID string) ([]string, error) {
 // ---- custom reading models ----
 
 // CreateCustomModel registers a private reading model for the owner.
+
+func (s *dbStore) SearchConversation(convID, userID, query string, limit int) ([]SearchHit, error) {
+	if _, err := s.GetConv(convID, userID); err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	pattern := "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(query) + "%"
+	rows, err := s.db.Query(`SELECT m.id,m.sender_id,m.nickname,m.content,m.ts,COALESCE(m.client_msg_id,''),COALESCE(m.image_id,''),COALESCE(NULLIF(cm.title,''),c.title) FROM messages m JOIN convs c ON c.id=m.conv_id JOIN conv_members cm ON cm.conv_id=m.conv_id AND cm.user_id=? AND cm.deleted_at=0 WHERE m.conv_id=? AND m.content LIKE ? ORDER BY m.ts DESC,m.id DESC LIMIT ?`, userID, convID, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SearchHit{}
+	for rows.Next() {
+		var h SearchHit
+		h.ConvID = convID
+		if err := rows.Scan(&h.Message.ID, &h.Message.SenderID, &h.Message.Nickname, &h.Message.Content, &h.Message.TS, &h.Message.ClientMsgID, &h.Message.ImageID, &h.Title); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
 
 // SearchMessages finds messages containing the query across every
 // conversation the user belongs to (database-only capability).

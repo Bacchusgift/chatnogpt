@@ -592,7 +592,8 @@ async function novelSend(text, imageID = '') {
   const ts = Math.floor(Date.now() / 1000);
   const entry = novelRemember(m, { own: true, text, ts, imageID });
   appendOwn(text, ts, null, imageID, entry.localID);
-  scrollFollow();
+  scrollBottom(true);
+  requestAnimationFrame(() => scrollBottom(true));
   if (!text) return;
   if (m.url) {
     if (novelSourceKind(m.url)) {

@@ -78,11 +78,12 @@ func New(cfg Config) *Plugin { return &Plugin{cfg: cfg} }
 // Meta 插件自描述：目录页、脚本注入与详情内容由基座从此派生。
 func (p *Plugin) Meta() pluginbase.Meta {
 	return pluginbase.Meta{
-		Name:   Name,
-		Title:  Title,
-		Desc:   Desc,
-		Icon:   "🕵",
-		Script: FrontendJS,
+		Name:      Name,
+		Title:     Title,
+		Desc:      Desc,
+		Icon:      "🕵",
+		Script:    FrontendJS,
+		RoomModes: []pluginbase.RoomMode{{ID: Name, Label: "谁是卧底"}},
 		Detail: []pluginbase.DetailItem{
 			{Type: "step", Text: "建房时对话模式选「谁是卧底」：多数人拿平民词，1 人拿相近的卧底词；"},
 			{Type: "step", Text: "按轮在聊天里用一句话描述自己的词——既能让队友明白，也别暴露给卧底；"},

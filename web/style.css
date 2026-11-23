@@ -306,7 +306,7 @@ body.cover-on .novel-browser[data-reveal-mode="setup"] .novel-reveal-setup { dis
 .image-lightbox-close { position: absolute; top: 16px; right: 18px; width: 40px; height: 40px; border-radius: 50%; background: #333; color: #fff; font-size: 28px; line-height: 1; }
 .image-lightbox-close:hover { background: #555; }
 .bubble .chat-image { max-width: 100%; }
-body.cover-on .msg-ai.covered .chat-image { cursor: default; }
+body.cover-on .msg-ai.covered .chat-image { cursor: zoom-in; }
 .image-preview {
   display: flex; align-items: flex-end; gap: 12px;
   min-height: 132px; padding: 4px 4px 12px;
@@ -719,8 +719,8 @@ body.cover-on .msg-real.covered.flash::after {
 .rmodal-chip-x { padding: 0 6px; color: #ffb86b; font-size: 15px; line-height: 1; border: 0; background: none; border-radius: 999px; }
 .rmodal-chip-x:hover { background: rgba(255,184,107,.18); }
 .rmodal-chips-hint { font-size: 12.5px; color: #777; }
-.rmodal-seg { display: flex; gap: 8px; background: #1e1e1e; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 4px; }
-.rmodal-seg-btn { flex: 1; padding: 8px 0; border: 0; background: none; color: #9f9f9f; font-size: 13.5px; border-radius: 9px; }
+.rmodal-seg { display: flex; flex-wrap: wrap; gap: 8px; background: #1e1e1e; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 4px; }
+.rmodal-seg-btn { flex: 1 1 110px; padding: 8px 0; border: 0; background: none; color: #9f9f9f; font-size: 13.5px; border-radius: 9px; }
 .rmodal-seg-btn.active { background: #fff; color: #0d0d0d; font-weight: 600; }
 .rmodal-status { min-height: 18px; margin: 10px 0 0; font-size: 12.5px; color: #ff8a8a; }
 .rmodal-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
@@ -813,3 +813,14 @@ body.cover-on .msg-real.covered.flash::after {
 .uc-name { flex: 1; }
 .uc-desc { color: #9be7c4; font-size: 12px; }
 .uc-panel .dx-btn { margin-left: auto; }
+
+.member-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px; }
+.picker-panel .member-remove { width:auto; color:#ff9c9c; }
+.member-add { display:flex; gap:8px; margin-top:14px; }
+.member-add input { min-width:0; flex:1; }
+.picker-panel .member-add button { width:auto; white-space:nowrap; background:#444; }
+.member-status { color:#ff9c9c; font-size:13px; }
+.image-lightbox-viewport { width:100%; height:100%; overflow:auto; display:flex; align-items:center; justify-content:center; }
+.image-lightbox-viewport img { transition:transform .12s ease; }
+.image-lightbox-controls { position:absolute; bottom:18px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:12px; padding:8px 12px; border-radius:12px; background:#333; color:#fff; }
+.image-lightbox-controls button { color:#fff; min-width:32px; padding:5px; font-size:18px; }

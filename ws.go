@@ -271,6 +271,21 @@ func (h *hub) broadcast(convID string, payload []byte, except *wsClient) {
 	}
 }
 
+// removeUser disconnects all active sessions after membership is revoked.
+func (h *hub) removeUser(convID, userID string) {
+	h.mu.Lock()
+	var clients []*wsClient
+	for cl := range h.rooms[convID] {
+		if cl.userID == userID {
+			clients = append(clients, cl)
+		}
+	}
+	h.mu.Unlock()
+	for _, cl := range clients {
+		cl.close()
+	}
+}
+
 // ---- client ----
 
 type wsClient struct {
