@@ -533,6 +533,7 @@ function doLogoutLocal() {
   $('#convList').replaceChildren();
   $('#convTitle').textContent = 'ChatNoGPT';
   $('#btnRenameConv').classList.add('hidden');
+  $('#btnGroupMembers').classList.add('hidden');
   document.body.classList.remove('cover-on');
   if (state.ws) { try { state.ws.close(); } catch {} state.ws = null; }
   showAuth();
@@ -943,7 +944,7 @@ function resetCurrentIfGone(goneId) {
     if (state.ws) { state.ws.close(); state.ws = null; }
     state.cur = null; state.curInfo = null; state.target = null;
     $('#messages').replaceChildren(); appendWelcome('ChatNoGPT'); $('#convTitle').textContent = 'ChatNoGPT';
-    $('#modelBtn').style.display = 'none'; $('#btnRenameConv').classList.add('hidden');
+    $('#modelBtn').style.display = 'none'; $('#btnRenameConv').classList.add('hidden'); $('#btnGroupMembers').classList.add('hidden');
   }
 }
 
@@ -1335,37 +1336,17 @@ async function selectConv(id) {
     $('#convTitle').textContent = d.conversation.title +
       (d.conversation.kind === 1 ? ' · ' + d.conversation.member_count + ' 人' : '');
     $('#btnRenameConv').classList.remove('hidden');
-    // 打开某个聊天 = 选中了对方那个“模型”
+    $('#btnGroupMembers').classList.toggle('hidden', d.conversation.kind !== 1);
+    $('#modelBtn').title = '选择模型';
+    // 群成员入口独立于底部模型选择器。
     if (d.conversation.peer_id) {
       setTarget({ id: d.conversation.peer_id, name: d.conversation.peer_nickname });
     } else if (d.conversation.kind === 1) {
-      // 群聊室：composer 显示全部成员模型名，超长省略号，点击查看完整列表
       state.target = null;
-      const names = (d.conversation.members || [])
-        .map(m => m.nickname)
-        .filter(n => n && n !== state.me.nickname);
-      const label = names.length > 2 ? names.slice(0, 2).join(', ') + '…' : names.join(', ');
-      $('#modelLabel').textContent = label || '群聊';
+      $('#modelLabel').textContent = '选择模型';
+      $('#effortLabel').style.display = 'none';
       $('#modelBtn').style.display = 'flex';
-      $('#modelBtn').title = '成员：' + (names.join('、') || '群聊');
-      $('#modelBtn').onclick = e => {
-        e.stopPropagation();
-        const { panel, cancel, close } = openPicker('群聊成员 · ' + d.conversation.member_count + ' 人');
-        const self = document.createElement('button');
-        self.type = 'button'; self.className = 'model-item';
-        const meName = document.createElement('div'); meName.className = 'm-name'; meName.textContent = state.me.nickname + '（我）';
-        self.append(meName); panel.insertBefore(self, cancel);
-        for (const m of d.conversation.members || []) {
-          if (m.id === state.me.id) continue;
-          const item = document.createElement('button');
-          item.type = 'button'; item.className = 'model-item';
-          const nm = document.createElement('div'); nm.className = 'm-name'; nm.textContent = m.nickname;
-          item.append(nm); panel.insertBefore(item, cancel);
-        }
-        void close;
-      };
     } else {
-      // 兼容旧的多人聊天：隐藏选择器
       state.target = null;
       $('#modelBtn').style.display = 'none';
     }
@@ -2856,6 +2837,24 @@ function bind() {
     state.drawerOpen = false;
     state.drawerClosedFor = state.cur;
     renderDrawer();
+  };
+  $('#btnGroupMembers').onclick = () => {
+    const conv = state.curInfo;
+    if (!conv || conv.kind !== 1) return;
+    closeModelMenu();
+    accessMenu.classList.add('hidden');
+    effortMenu.classList.add('hidden');
+    const { panel, cancel } = openPicker('群聊成员 · ' + conv.member_count + ' 人');
+    const members = conv.members || [];
+    for (const m of members) {
+      const item = document.createElement('div');
+      item.className = 'model-item';
+      const name = document.createElement('div');
+      name.className = 'm-name';
+      name.textContent = m.nickname + (m.id === state.me.id ? '（我）' : '');
+      item.appendChild(name);
+      panel.insertBefore(item, cancel);
+    }
   };
   $('#btnRenameConv').onclick = () => {
     if (state.cur && state.curInfo) renameConv(state.cur, $('#convTitle').textContent);

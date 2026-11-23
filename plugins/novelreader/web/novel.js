@@ -103,6 +103,7 @@ function novelSelect(m) {
   state.curInfo = null;
   state.lastRenderTS = 0;
   $('#btnRenameConv').classList.add('hidden');
+  $('#btnGroupMembers').classList.add('hidden');
   setTarget(m);
   state.target.custom = true;
   $('#convTitle').textContent = m.name;

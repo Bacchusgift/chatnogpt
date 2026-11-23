@@ -31,7 +31,7 @@ const (
 	Name       = "novel-reader"
 	Title      = "小说阅读"
 	Desc       = "自定义阅读模型：番茄小说链接续读、TXT 上传阅读、章节透视"
-	FrontendJS = "/plugins/novel-reader/novel.js?v=2.5.2.1"
+	FrontendJS = "/plugins/novel-reader/novel.js?v=2.5.2.2"
 )
 
 // WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。
