@@ -724,14 +724,25 @@ function timeScrollToMessage(mid) {
   }, 100);
 }
 
-// 会话行显示名：归属优先——1:1 显示对方昵称，群聊室显示房间名
+const AUTO_CONV_TITLES = ['需求与方案', '技术讨论', '问题排查', '实现思路', '功能规划', '测试与验证'];
+
+// 会话行显示名：1:1 未改名时显示对方昵称（归属）；用户自定义过标题则显示自定义标题
 function convDisplayName(c) {
-  if (c.kind !== 1 && c.peer_nickname) return c.peer_nickname;
+  if (c.kind !== 1 && c.peer_nickname) {
+    const auto = AUTO_CONV_TITLES.some(t => (c.title || '').startsWith(t));
+    if (!auto) return c.title;
+    return c.peer_nickname;
+  }
   return c.title;
 }
 function convTooltip(c) {
-  if (c.kind !== 1 && c.peer_nickname) return '与 ' + c.peer_nickname + ' 的对话';
-  return c.title + '（双击修改标题）';
+  const name = convDisplayName(c);
+  if (c.kind !== 1 && c.peer_nickname) {
+    const auto = AUTO_CONV_TITLES.some(t => (c.title || '').startsWith(t));
+    if (!auto) return name + ' · 自定义标题（双击修改）';
+    return '与 ' + c.peer_nickname + ' 的对话 · 双击可改名';
+  }
+  return name + '（双击修改标题）';
 }
 function convButton(c) {
   const b = document.createElement('button');
@@ -742,7 +753,7 @@ function convButton(c) {
   if (c.unread_count > 0) b.appendChild(unreadBadgeEl(c.unread_count));
   b.title = convTooltip(c);
   b.onclick = () => { selectConv(c.id); closeSidebarMobile(); };
-  if (c.kind === 1) b.ondblclick = () => renameConv(c.id, c.title);
+  b.ondblclick = () => renameConv(c.id, c.title);
   if (c.kind !== 1) {
     b.draggable = true;
     b.addEventListener('dragstart', e => {
@@ -854,8 +865,8 @@ function renderConvList() {
   toggle.onclick = () => { showArchivedConvs = !showArchivedConvs; renderConvList(); };
   list.appendChild(toggle);
   if (typeof novelRenderList === 'function') novelRenderList(list);
-}
   updateAppBadge();
+}
 
 
 async function refreshProjectsAndConvs() {
@@ -962,7 +973,7 @@ function openConvMenu(anchor, c) {
   menu.id = 'convCtxMenu';
   const isNovel = c.id.startsWith('novel:');
   const items = [];
-  if (!isNovel && c.kind === 1) items.push({ label: '重命名', fn: () => renameConv(c.id, c.title) });
+  if (!isNovel) items.push({ label: '重命名', fn: () => renameConv(c.id, c.title) });
   items.push({ label: archivedConvs().has(c.id) ? '从归档还原' : '归档', fn: () => archiveConv(c) });
   if (!isNovel && c.kind !== 1 && c.project_id) {
     items.push({ label: '移出项目', fn: async () => {

@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -298,10 +297,11 @@ var (
 	errNotYourTurn  = errors.New("还没轮到你出牌")
 	errPhase        = errors.New("当前阶段不能执行该操作")
 	errBadCard      = errors.New("没有这张牌")
+	errNotPlayer    = errors.New("你不是本局玩家")
 )
 
-// StartGame 发牌开局：每位玩家 10 张（不重复），讲者为首位
-func (p *Plugin) StartGame(convID string, players []DPlayer) (*DixitState, error) {
+// StartGame 发牌开局：每位玩家 10 张（不重复），调用者即讲者（与数组顺序无关）。
+func (p *Plugin) StartGame(convID, userID string, players []DPlayer) (*DixitState, error) {
 	deck := make([]int, DeckSize)
 	for i := range deck {
 		deck[i] = i + 1
@@ -310,8 +310,18 @@ func (p *Plugin) StartGame(convID string, players []DPlayer) (*DixitState, error
 		j := int(rndIntn(i + 1))
 		deck[i], deck[j] = deck[j], deck[i]
 	}
+	storyIdx := -1
+	for i := range players {
+		if players[i].ID == userID {
+			storyIdx = i
+			break
+		}
+	}
+	if storyIdx < 0 {
+		return nil, errNotPlayer
+	}
 	st := &DixitState{
-		ConvID: convID, Phase: phaseStory, Round: 1, StoryIdx: 0,
+		ConvID: convID, Phase: phaseStory, Round: 1, StoryIdx: storyIdx,
 		Votes: map[string]int{},
 	}
 	for i := range players {
@@ -623,7 +633,7 @@ func (p *Plugin) handleRoot(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "需要 conv_id 与至少 3 名玩家", http.StatusBadRequest)
 			return
 		}
-		if _, err := p.StartGame(req.ConvID, req.Players); err != nil {
+		if _, err := p.StartGame(req.ConvID, user, req.Players); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -688,7 +698,7 @@ func (p *Plugin) handleSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "需要 conv_id 与至少 3 名玩家", http.StatusBadRequest)
 			return
 		}
-		if _, err := p.StartGame(req.ConvID, req.Players); err != nil {
+		if _, err := p.StartGame(req.ConvID, user, req.Players); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -715,15 +725,6 @@ func (p *Plugin) handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
 		action := parts[2]
-		var respStatus int
-		defer func() {
-			log.Println("[dixit-dbg] resp action=" + action + " status=" + itoa(respStatus))
-		}()
-		w2 := &statusWriter{ResponseWriter: w, status: 200}
-		defer func() {
-			respStatus = w2.status
-			log.Println("[dixit-dbg] resp action=" + action + " status=" + itoa(w2.status))
-		}()
 		var req struct {
 			Card int    `json:"card"`
 			Clue string `json:"clue"`
@@ -833,21 +834,4 @@ func nowUnix() int64 { return time.Now().Unix() }
 func writeJSONOK(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *statusWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.status = 200
-	}
-	return w.ResponseWriter.Write(b)
 }
