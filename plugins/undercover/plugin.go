@@ -25,7 +25,7 @@ const (
 	Name       = "undercover"
 	Title      = "谁是卧底"
 	Desc       = "经典派对游戏：暗词描述与投票放逐，找出卧底"
-	FrontendJS = "/plugins/undercover/undercover.js?v=2.5.0"
+	FrontendJS = "/plugins/undercover/undercover.js?v=2.5.0.1"
 )
 
 // WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（与门禁注入一致）。

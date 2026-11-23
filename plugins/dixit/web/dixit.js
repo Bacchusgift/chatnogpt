@@ -101,7 +101,7 @@
     let d = null;
     try { d = await CNGP.api(API + '?conv=' + encodeURIComponent(curConv())); }
     catch (e) { return; }
-    if (!d.dixit) { CNGP.drawer.setPanel(null); return; }
+    if (!d.dixit) return;
     gs.view = d.game;
     CNGP.drawer.setPanel({ title: '只言片语', render: el => dixitRenderInto(el) });
   }

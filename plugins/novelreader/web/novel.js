@@ -201,7 +201,7 @@ function novelReaderPanel(box, m) {
   compactNext.textContent = '>'; compactNext.title = '下一章'; compactNext.setAttribute('aria-label', '下一章');
   compactNext.onclick = () => novelReaderControl('next', m);
   compactActions.append(compactCopy, compactPrevious, compactNext, compactRefresh);
-  addMessageVotes(compactActions);
+  addMessageVotes(compactActions, {});
   compact.append(compactLabel, compactBubble, compactActions);
   panel.append(toolbar, status, content, compact);
   panel.dataset.chapterReady = '0';
@@ -510,7 +510,7 @@ function novelReply(m, text, ts, fontURL = '', dialogueTyping = false) {
   row.dataset.nickname = m.name;
   if (ts) {
     const time = document.createElement('div'); time.className = 'msg-ai-time';
-    time.textContent = fmtDividerLabel(ts); time.title = fullStamp(ts); realWrap.appendChild(time);
+    setRelativeTime(time, ts); time.title = fullStamp(ts); realWrap.appendChild(time);
   }
   const body = document.createElement('div'); body.className = 'ai-body';
   body.textContent = text;
@@ -554,7 +554,7 @@ function novelReply(m, text, ts, fontURL = '', dialogueTyping = false) {
     syncDisguise();
   };
   actions.append(copy, previous, next, disguise);
-  addMessageVotes(actions);
+  addMessageVotes(actions, {});
   row.appendChild(actions);
   return body;
 }

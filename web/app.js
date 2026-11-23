@@ -76,14 +76,31 @@ function fullStamp(ts) {
     `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
+function setRelativeTime(element, ts) {
+  element.dataset.timestamp = String(ts);
+  element.textContent = fmtDividerLabel(ts);
+  element.title = fullStamp(ts);
+}
+
+function refreshRelativeTimes() {
+  document.querySelectorAll('#messages [data-timestamp]').forEach(element => {
+    const ts = Number(element.dataset.timestamp);
+    if (Number.isFinite(ts) && ts > 0) element.textContent = fmtDividerLabel(ts);
+  });
+}
+
+function sameLocalDay(a, b) {
+  return new Date(a * 1000).toDateString() === new Date(b * 1000).toDateString();
+}
+
 // 与上一条消息间隔超阈值（或为首条）时插入居中时间分割线；
 // 只有真正插入分割线时才推进 anchor，避免连续短间隔消息被提前“顶掉”
 function ensureDivider(ts) {
   if (!ts) return;
-  if (state.lastRenderTS && ts - state.lastRenderTS < DIVIDER_GAP_SEC) return;
+  if (state.lastRenderTS && sameLocalDay(ts, state.lastRenderTS) && ts - state.lastRenderTS < DIVIDER_GAP_SEC) return;
   const div = document.createElement('div');
   div.className = 'time-divider';
-  div.textContent = fmtDividerLabel(ts);
+  setRelativeTime(div, ts);
   $('#messages').appendChild(div);
   state.lastRenderTS = ts;
 }
@@ -452,6 +469,7 @@ function showApp() {
   // 插件脚本按目录注入：目录来自 /api/plugins（enabled 且带 script），基座零插件知识
   loadPluginCatalog().then(catalog => {
     state.pluginCatalog = catalog;
+    state.enabledPlugins = catalog.filter(p => p.enabled).map(p => p.name);
     const loads = catalog.filter(p => p.enabled && p.script)
       .map(p => ensurePluginScript(p.name, p.script));
     Promise.all(loads).then(() => window.dispatchEvent(new CustomEvent('cngp:plugins-loaded')));
@@ -2019,11 +2037,10 @@ function prependOlder(older) {
   const frag = document.createDocumentFragment();
   let lastTS = -Infinity;
   for (const m of older) {
-    if (lastTS !== -Infinity && m.ts - lastTS > 300) {
+    if (lastTS !== -Infinity && (m.ts - lastTS >= DIVIDER_GAP_SEC || !sameLocalDay(m.ts, lastTS))) {
       const div = document.createElement('div');
       div.className = 'time-divider';
-      div.textContent = fmtDividerLabel(m.ts);
-      div.title = fullStamp(m.ts);
+      setRelativeTime(div, m.ts);
       frag.appendChild(div);
     }
     lastTS = m.ts;
@@ -2034,11 +2051,10 @@ function prependOlder(older) {
   }
   if (first && first.classList && first.classList.contains('time-divider') === false && lastTS !== -Infinity) {
     const firstTS = state.firstMsg ? state.firstMsg.ts : 0;
-    if (firstTS - lastTS > 300) {
+    if (firstTS && (firstTS - lastTS >= DIVIDER_GAP_SEC || !sameLocalDay(firstTS, lastTS))) {
       const div = document.createElement('div');
       div.className = 'time-divider';
-      div.textContent = fmtDividerLabel(firstTS);
-      div.title = fullStamp(firstTS);
+      setRelativeTime(div, firstTS);
       frag.appendChild(div);
     }
   }
@@ -2930,11 +2946,13 @@ async function init() {
   state.baseTitle = document.title;
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
+      refreshRelativeTimes();
       resetUnread();
       if (state.cur && !state.cur.startsWith('novel:')) markConversationRead(state.cur);
     }
   });
   window.addEventListener('focus', () => {
+    refreshRelativeTimes();
     resetUnread();
     if (state.cur && !state.cur.startsWith('novel:')) markConversationRead(state.cur);
   });
@@ -2943,6 +2961,7 @@ async function init() {
   let pollTicks = 0;
   setInterval(() => {
     pollTicks++;
+    if (!document.hidden && pollTicks % 12 === 0) refreshRelativeTimes();
     if (!state.token || !state.me) return;
     if (document.hidden && pollTicks % 3 !== 0) return;
     loadConvs(true);

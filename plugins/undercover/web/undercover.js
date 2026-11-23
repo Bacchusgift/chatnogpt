@@ -34,7 +34,7 @@
     let d = null;
     try { d = await CNGP.api(API + '/games?conv_id=' + encodeURIComponent(curConv())); }
     catch (e) { return; }
-    if (!d.uc) { CNGP.drawer.setPanel(null); return; }
+    if (!d.uc) return;
     gs.view = d.game;
     CNGP.drawer.setPanel({ title: '谁是卧底', render: el => ucRenderInto(el) });
   }

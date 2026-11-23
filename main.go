@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"chatnogpt/plugins/dixit"
+	"chatnogpt/plugins/guessnumber"
+	"chatnogpt/plugins/murdermystery"
 	"chatnogpt/plugins/novelreader"
 	"chatnogpt/plugins/pluginbase"
 	"chatnogpt/plugins/turtlesoup"
@@ -241,6 +243,21 @@ func (s *server) buildRoutes(mux *http.ServeMux) {
 	ucPlugin := undercover.New(undercover.Config{DB: pluginDB, Dir: s.store.Dir()})
 	pluginbase.Register(dixitPlugin)
 	pluginbase.Register(ucPlugin)
+	pluginbase.Register(murdermystery.New())
+	pluginbase.Register(guessnumber.New(guessnumber.Config{DB: pluginDB, Dir: s.store.Dir(), Members: func(convID, userID string) ([]guessnumber.Player, error) {
+		c, err := s.store.ConvDetail(convID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if c.Kind != 1 {
+			return nil, errors.New("需要群聊")
+		}
+		players := make([]guessnumber.Player, 0, len(c.Members))
+		for _, m := range c.Members {
+			players = append(players, guessnumber.Player{ID: m.ID, Nickname: m.Nickname})
+		}
+		return players, nil
+	}}))
 	for _, pl := range pluginbase.All() {
 		pl := pl
 		meta := pl.Meta()

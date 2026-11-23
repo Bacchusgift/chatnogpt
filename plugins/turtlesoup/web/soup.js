@@ -75,8 +75,6 @@
     gs.game = g;
     if (soup) {
       CNGP.drawer.setPanel({ title: '海龟汤', render: el => tsRenderInto(el) });
-    } else {
-      CNGP.drawer.setPanel(null);
     }
     CNGP.actions.refresh();
   }

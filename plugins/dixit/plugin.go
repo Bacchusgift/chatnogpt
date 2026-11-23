@@ -29,7 +29,7 @@ const (
 	Name       = "dixit"
 	Title      = "只言片语"
 	Desc       = "Dixit 桌游：讲者出暗牌并描述，其他人出牌猜谜，经典计分"
-	FrontendJS = "/plugins/dixit/dixit.js?v=2.5.0"
+	FrontendJS = "/plugins/dixit/dixit.js?v=2.5.0.1"
 )
 
 // 阶段：story=讲者出牌待描述 pick=成员选牌 vote=投票 reveal=结算展示
