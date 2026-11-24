@@ -2452,6 +2452,45 @@ function anchorMenu(menu, btn, align) {
   else menu.style.left = Math.max(0, b.left - w.left) + 'px';
 }
 
+// 输入框内可展开的小菜单，供普通分组与小说章节共用。
+let simulationPopover = null;
+function closeSimulationPopover() {
+  if (!simulationPopover) return;
+  simulationPopover.element.remove(); simulationPopover.anchor?.setAttribute('aria-expanded', 'false');
+  simulationPopover = null;
+}
+function openSimulationPopover(anchor) {
+  closeSimulationPopover();
+  const element = document.createElement('div'); element.className = 'simulation-popover';
+  element.setAttribute('role', 'region'); element.setAttribute('aria-label', '选择分组');
+  document.body.appendChild(element);
+  const r = anchor.getBoundingClientRect();
+  element.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 328)) + 'px';
+  element.style.bottom = Math.max(8, window.innerHeight - r.top + 8) + 'px';
+  anchor.setAttribute('aria-expanded', 'true'); simulationPopover = { element, anchor };
+  return element;
+}
+async function openSimulationGroups(anchor) {
+  const panel = openSimulationPopover(anchor);
+  const field = document.createElement('input'); field.type = 'search'; field.placeholder = '搜索分组'; field.setAttribute('aria-label', '搜索分组');
+  const list = document.createElement('div'); list.className = 'simulation-list';
+  panel.append(field, list);
+  const render = () => {
+    list.replaceChildren(); const query = field.value.trim().toLowerCase();
+    const projects = (state.projects || []).filter(p => p.name.toLowerCase().includes(query));
+    if (!projects.length) { const note = document.createElement('div'); note.className = 'simulation-note'; note.textContent = query ? '没有匹配的分组' : '暂无分组，可在左侧项目中新建'; list.appendChild(note); }
+    for (const p of projects) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'simulation-item'; button.textContent = '📁 ' + p.name;
+      button.onclick = async () => {
+        if (!state.cur || state.cur.startsWith('novel:') || state.curInfo?.kind === 1) { toast('请选择普通单人会话后再归入项目'); return; }
+        try { await api('/api/conversations/' + encodeURIComponent(state.cur) + '/project', { body: { project_id: p.id } }); await refreshProjectsAndConvs(); closeSimulationPopover(); toast('已归入 ' + p.name); } catch (e) { toast(e.message); }
+      };
+      list.appendChild(button);
+    }
+  };
+  field.oninput = render; render(); field.focus();
+}
+
 /* ---------- “完全访问”选择（纯装饰，维持 AI 网站观感） ---------- */
 
 const accessBtn = $('#btnAccess');
@@ -2916,6 +2955,17 @@ function bind() {
     $('#imageInput').value = '';
   };
 
+  $('#btnSimGroup').onclick = e => {
+    e.stopPropagation();
+    if (simulationPopover?.anchor === e.currentTarget) { closeSimulationPopover(); return; }
+    closeModelMenu(); accessMenu.classList.add('hidden'); effortMenu.classList.add('hidden');
+    const panel = document.querySelector('.novel-browser.collapsed.dialogue-on');
+    if (panel && state.cur?.startsWith('novel:') && typeof novelOpenCatalog === 'function') {
+      const model = novelModels.find(m => 'novel:' + m.id === state.cur);
+      if (model) { novelOpenCatalog(model, e.currentTarget); return; }
+    }
+    openSimulationGroups(e.currentTarget);
+  };
   modelBtn.addEventListener('click', e => {
     e.stopPropagation();
     accessMenu.classList.add('hidden');
@@ -2937,6 +2987,7 @@ function bind() {
     else effortMenu.classList.add('hidden');
   });
   document.addEventListener('click', e => {
+    if (simulationPopover && !simulationPopover.element.contains(e.target) && !simulationPopover.anchor.contains(e.target)) closeSimulationPopover();
     if (!modelMenu.contains(e.target) && !modelBtn.contains(e.target)) closeModelMenu();
     if (!accessMenu.contains(e.target) && !accessBtn.contains(e.target)) accessMenu.classList.add('hidden');
     if (!effortMenu.contains(e.target) && !effortBtn.contains(e.target)) effortMenu.classList.add('hidden');
@@ -2950,6 +3001,7 @@ function bind() {
       openSearch();
       return;
     }
+    if (e.key === 'Escape' && simulationPopover) { closeSimulationPopover(); return; }
     if (e.key === 'Escape' && searchUI) {
       e.preventDefault();
       closeSearch();

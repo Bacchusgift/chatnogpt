@@ -24,6 +24,26 @@ function jinjiangChapter() {
   return { url: location.href, title, text, fontURL: '', paragraphs: text.split('\n\n').length };
 }
 
+async function chapterCatalog() {
+  const page = new URL(location.href); const novel = page.searchParams.get('novelid');
+  if (!novel) return { error: '无法确定晋江书籍编号' };
+  const catalogURL = new URL('/onebook.php', location.origin); catalogURL.searchParams.set('novelid', novel);
+  try {
+    const response = await fetch(catalogURL.href, { credentials: 'include' });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const seen = new Set(), chapters = [];
+    for (const a of doc.querySelectorAll('a[href]')) {
+      let u; try { u = new URL(a.getAttribute('href'), catalogURL); } catch { continue; }
+      const id = u.searchParams.get('chapterid');
+      if (u.origin !== location.origin || u.pathname !== '/onebook.php' || u.searchParams.get('novelid') !== novel || !/^\d+$/.test(id || '') || seen.has(id)) continue;
+      const title = (a.textContent || '').trim().replace(/\s+/g, ' '); if (!title) continue;
+      seen.add(id); chapters.push({ title, url: u.href });
+    }
+    return chapters.length ? { chapters } : { error: '晋江页面没有提供可识别的章节目录，请确认目录可见。' };
+  } catch { return { error: '无法读取晋江目录，请确认来源网站已登录且目录可访问。' }; }
+}
+
 function jinjiangChangeChapter(op) {
   const label = op === 'next' ? '下一章' : '上一章';
   const link = op === 'next' ? document.querySelector('#chapter_next_link') :
@@ -34,8 +54,8 @@ function jinjiangChangeChapter(op) {
 
 try { runtime.onMessage.addListener((message, _sender, respond) => {
   if (message?.type !== 'reader-control') return;
-  respond(message.op === 'next' || message.op === 'previous'
-    ? jinjiangChangeChapter(message.op) : jinjiangChapter());
+  Promise.resolve().then(() => message.op === 'catalog' ? chapterCatalog() : message.op === 'next' || message.op === 'previous'
+    ? jinjiangChangeChapter(message.op) : jinjiangChapter()).then(respond, error => respond({ error: error.message || '读取目录失败' }));
   return true;
 });
 globalThis.__cngpJinjiangReaderInstalled = true;

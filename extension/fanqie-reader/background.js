@@ -1,6 +1,7 @@
 'use strict';
 
 const readerTabByChat = new Map();
+const catalogsByChat = new Map();
 
 // Reloading the extension invalidates existing content scripts. Reinject into
 // already-open supported tabs without navigating or refreshing them.
@@ -168,6 +169,37 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       await withTimeout(chrome.tabs.update(tab.id, { url }), 6000, '切换来源章节超时');
       return { opened: true, message: '已切换到指定章节；确认可读后，返回聊天区点“连接 / 刷新”' };
     }
+    if (message.op === 'catalog') {
+      stage = '读取章节目录';
+      const result = await withTimeout(readChapter(tab.id, 'catalog', kind), 22000, '章节目录读取超时');
+      if (Array.isArray(result?.chapters)) {
+        const chapters = result.chapters.filter(chapter => readerSource(chapter.url)?.kind === kind && typeof chapter.title === 'string');
+        catalogsByChat.set(sender.tab.id, { tabId: tab.id, chapters });
+        return chapters.length ? { chapters } : { error: '目录中没有可用的章节链接' };
+      }
+      return result || { error: '来源页面未返回章节目录' };
+    }
+    if (message.op === 'jump') {
+      const catalog = catalogsByChat.get(sender.tab.id);
+      const target = catalog?.tabId === tab.id && catalog.chapters.find(c => c.url === message.target);
+      if (!target) return { error: '章节目录已失效，请重新打开目录后选择。' };
+      stage = '加载所选章节';
+      await withTimeout(chrome.tabs.update(tab.id, { url: target.url }), 6000, '切换章节超时');
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const currentTab = await chrome.tabs.get(tab.id);
+        if (currentTab.status !== 'complete' || !sameReaderPage(currentTab.url, target.url, kind)) continue;
+        try {
+          const result = await readChapter(tab.id, 'attach', kind);
+          if (result?.text && sameReaderPage(result.url, target.url, kind)) {
+            readerTabByChat.set(sender.tab.id, { tabId: tab.id, url: result.url });
+            return result;
+          }
+          if (result?.error && !/没有章节正文|未显示完整正文/.test(result.error)) return result;
+        } catch {}
+      }
+      return { error: '所选章节未能完整加载，当前章节已保留；请检查来源页面权限后重试。' };
+    }
     stage = '来源页正文读取';
     const result = kind === 'fanqie'
       ? (message.op === 'next' || message.op === 'previous'
@@ -184,7 +216,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   let timer;
   Promise.race([work, new Promise(resolve => {
     timer = setTimeout(() => resolve({ error: stage + '超时；当前章节已保留。' }),
-      message.op === 'next' || message.op === 'previous' ? 34000 : 28000);
+      ['next', 'previous', 'jump'].includes(message.op) ? 34000 : 28000);
   })]).then(result => { clearTimeout(timer); respond(result); }, error => { clearTimeout(timer); fail(error); });
   return true;
 });

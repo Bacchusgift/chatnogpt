@@ -14,12 +14,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +33,7 @@ const (
 	Name       = "novel-reader"
 	Title      = "小说阅读"
 	Desc       = "自定义阅读模型：番茄小说链接续读、TXT 上传阅读、章节透视"
-	FrontendJS = "/plugins/novel-reader/novel.js?v=2.5.2.4"
+	FrontendJS = "/plugins/novel-reader/novel.js?v=2.5.2.11"
 )
 
 // WithUser / userIDFrom 为 pluginbase 统一身份契约的薄封装（保留以兼容既有调用）。
@@ -409,18 +411,46 @@ func (p *Plugin) handleModelSub(w http.ResponseWriter, r *http.Request) {
 	}
 	modelID, action := parts[0], parts[1]
 	switch {
+	case (action == "txt-catalog" || action == "txt-chapter") && r.Method == http.MethodGet:
+		m, err := p.getModel(modelID, owner)
+		if err != nil {
+			http.Error(w, "阅读源不存在", http.StatusNotFound)
+			return
+		}
+		if m.Text == "" {
+			http.Error(w, "请先上传 TXT 文件", http.StatusBadRequest)
+			return
+		}
+		chapters := splitTXT(m.Text)
+		if action == "txt-catalog" {
+			items := make([]map[string]any, 0, len(chapters))
+			for i, c := range chapters {
+				items = append(items, map[string]any{"title": c.Title, "index": i})
+			}
+			writeJSONOK(w, map[string]any{"chapters": items})
+			return
+		}
+		index, err := strconv.Atoi(r.URL.Query().Get("index"))
+		if err != nil || index < 0 || index >= len(chapters) {
+			http.Error(w, "章节不存在", http.StatusBadRequest)
+			return
+		}
+		c := chapters[index]
+		text := strings.TrimSpace(m.Text[c.Start:c.End])
+		writeJSONOK(w, map[string]any{"title": c.Title, "text": text, "url": fmt.Sprintf("txt:%s:%d", modelID, index), "paragraphs": len(strings.Split(text, "\n")), "index": index})
+		return
 	case action == "next" && r.Method == http.MethodPost:
 		p.handleNext(w, owner, modelID)
 	case action == "text" && r.Method == http.MethodPut:
 		var req struct {
 			Text string `json:"text"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 3<<20)).Decode(&req); err != nil {
+		if err := json.NewDecoder(io.LimitReader(r.Body, 24<<20)).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if len(req.Text) == 0 || len(req.Text) > 2<<20 || !utf8.ValidString(req.Text) {
-			http.Error(w, "TXT 文件需为 UTF-8 编码且不超过 2 MB", http.StatusBadRequest)
+		if len(req.Text) == 0 || len(req.Text) > 15<<20 || !utf8.ValidString(req.Text) {
+			http.Error(w, "TXT 内容需为 UTF-8 编码且不超过 15 MB", http.StatusBadRequest)
 			return
 		}
 		if err := p.saveModelText(modelID, owner, req.Text); err != nil {

@@ -144,3 +144,51 @@ test('连续翻章使用当前来源标签页并能返回上一章', async () =>
   assert.equal(result.title, '第218章');
   assert.deepEqual(calls.map(call => call[1]), ['attach', 'next', 'next', 'previous']);
 });
+
+test('目录选章仅允许目录中的链接并等待目标正文', async () => {
+  let listener;
+  const original = 'https://fanqienovel.com/reader/101';
+  const target = 'https://fanqienovel.com/reader/102';
+  const tab = { id: 7, url: original, status: 'complete' };
+  const calls = [];
+  const chrome = {
+    runtime: { onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } } },
+    tabs: {
+      query: async () => [{ ...tab }], get: async () => ({ ...tab }),
+      update: async (_id, options) => { calls.push(options.url); tab.url = options.url; return { ...tab }; },
+      sendMessage: async (_id, message) => message.op === 'catalog'
+        ? { chapters: [{ title: '第102章', url: target }] }
+        : { url: tab.url, title: '第102章', text: '完整正文'.repeat(40) },
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(directory, 'background.js'), 'utf8'),
+    { chrome, URL, Map, Promise, setTimeout: (fn, ms) => setTimeout(fn, ms === 500 ? 0 : ms), clearTimeout });
+  const request = (op, targetURL) => new Promise(resolve => listener({ type: 'reader-request', op, url: original, target: targetURL },
+    { tab: { id: 3, url: 'http://127.0.0.1:8080/' } }, resolve));
+  const catalog = await request('catalog');
+  assert.equal(catalog.chapters[0].url, target);
+  const denied = await request('jump', 'https://fanqienovel.com/reader/999');
+  assert.match(denied.error, /目录已失效/);
+  assert.equal(calls.length, 0);
+  const loaded = await request('jump', target);
+  assert.equal(loaded.url, target);
+  assert.ok(loaded.text.length >= 100);
+  assert.deepEqual(calls, [target]);
+});
+
+test('番茄动态目录按章节编号读取，并生成可选链接', async () => {
+  let listener;
+  const nodes = [
+    { getAttribute: () => '7538791358979392024', querySelector: () => ({ textContent: '第1章 示例' }) },
+    { getAttribute: () => '7539452417448870424', querySelector: () => ({ textContent: '第2章 示例' }) },
+  ];
+  const document = { querySelector: selector => selector === '.catalog-content [data-item-id]' ? nodes[0] : null,
+    querySelectorAll: selector => selector === '.catalog-content [data-item-id]' ? nodes : [] };
+  const chrome = { runtime: { onMessage: { addListener(fn) { listener = fn; } } } };
+  vm.runInNewContext(fs.readFileSync(path.join(directory, 'fanqie.js'), 'utf8'),
+    { chrome, document, location: { origin: 'https://fanqienovel.com' }, URL, Promise, setTimeout, clearTimeout });
+  const result = await new Promise(resolve => listener({ type: 'reader-control', op: 'catalog' }, {}, resolve));
+  assert.equal(result.chapters.length, 2);
+  assert.equal(result.chapters[0].url, 'https://fanqienovel.com/reader/7538791358979392024');
+  assert.equal(result.chapters[1].title, '第2章 示例');
+});

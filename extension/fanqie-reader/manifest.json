@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatNoGPT 阅读桥接",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "把已登录的来源网站章节显示在 ChatNoGPT 阅读面板中。",
   "permissions": ["tabs", "scripting"],
   "host_permissions": [

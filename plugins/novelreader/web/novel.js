@@ -5,6 +5,7 @@ if (!window.CNGP || !CNGP.api) { window.__novelDegraded = true; }
 
 // 浏览器扩展只读取来源网站上当前可阅读的章节。登录凭据始终留在来源网站。
 let novelModels = [];
+let novelSources = {};
 let novelHistory = {};
 let novelChapters = {};
 let novelHistorySources = {};
@@ -34,6 +35,7 @@ async function novelLoad() {
   try {
     const d = await api('/api/plugins/novel-reader/models');
     novelModels = d.models || [];
+    try { novelSources = JSON.parse(localStorage.getItem('cngp_novel_sources_' + state.me.id) || '{}'); } catch { novelSources = {}; }
     try { novelHistory = JSON.parse(localStorage.getItem('cngp_novel_history_' + state.me.id) || '{}'); } catch { novelHistory = {}; }
     try { novelChapters = JSON.parse(localStorage.getItem('cngp_novel_chapters_' + state.me.id) || '{}'); } catch { novelChapters = {}; }
     try { novelHistorySources = JSON.parse(localStorage.getItem('cngp_novel_history_sources_' + state.me.id) || '{}'); } catch { novelHistorySources = {}; }
@@ -41,7 +43,7 @@ async function novelLoad() {
     let changed = false;
     for (const m of novelModels) {
       const oldSource = novelHistorySources[m.id];
-      const staleChapter = novelChapters[m.id] && novelChapters[m.id].sourceURL !== m.url;
+      const staleChapter = novelChapters[m.id] && ![m.url, 'txt:' + m.id].includes(novelChapters[m.id].sourceURL);
       if ((oldSource !== undefined && oldSource !== m.url) || staleChapter) {
         delete novelChapters[m.id];
         delete novelHistory[m.id];
@@ -89,12 +91,16 @@ function novelSourceKind(raw) {
   return '';
 }
 
-function novelSourceLabel(m) { return novelSourceKind(m.url) === 'jinjiang' ? '晋江' : '番茄'; }
+function novelUsingTXT(m) { return !m.url || novelSources[m.id] === 'txt'; }
+function novelSourceKey(m) { return novelUsingTXT(m) ? 'txt:' + m.id : m.url; }
+function novelSourceLabel(m) { return novelUsingTXT(m) ? 'TXT' : novelSourceKind(m.url) === 'jinjiang' ? '晋江' : '番茄'; }
+
 
 function novelSelect(m) {
   novelDialogueGeneration++;
   novelDialogueBusy = false;
   hideTyping();
+  closeSimulationPopover();
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.cur = 'novel:' + m.id;
   state.gen++; state.queue = []; state.animating = false;
@@ -109,18 +115,10 @@ function novelSelect(m) {
   $('#convTitle').textContent = m.name;
   const box = $('#messages'); box.innerHTML = '';
   const controls = document.createElement('div'); controls.className = 'novel-controls';
-  if (novelSourceKind(m.url)) {
-    novelAddFanqieControls(controls, m);
-  } else if (m.url) {
-    const link = document.createElement('a'); link.href = m.url;
-    link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '打开来源 ↗';
-    controls.appendChild(link);
-  } else {
-    const upload = document.createElement('button'); upload.type = 'button'; upload.textContent = '上传 TXT';
-    upload.onclick = () => novelUploadTXT(m); controls.appendChild(upload);
-  }
+  const hint = document.createElement('div'); hint.className = 'novel-hint'; hint.textContent = '你正在和 ' + m.name + ' 智能 Agent 对话'; controls.appendChild(hint);
   box.appendChild(controls);
-  if (novelSourceKind(m.url)) novelReaderPanel(box, m);
+  if (novelUsingTXT(m) || (novelSources[m.id] !== 'other' && novelSourceKind(m.url))) novelReaderPanel(box, m);
+  else if (m.url) { const link = document.createElement('a'); link.href = m.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '打开来源 ↗'; controls.appendChild(link); }
   $('#msgScroll').onclick = event => {
     if (state.cur !== 'novel:' + m.id || event.target.closest('button, a, .novel-browser')) return;
     novelDialogueNext(m);
@@ -136,7 +134,7 @@ function novelSelect(m) {
   renderConvList(); scrollBottom(true);
 }
 
-function novelBridgeRequest(op, m) {
+function novelBridgeRequest(op, m, target = '') {
   return new Promise(resolve => {
     const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
     const timer = setTimeout(() => {
@@ -149,10 +147,10 @@ function novelBridgeRequest(op, m) {
     }, novelBridgeAvailable ? 45000 : 2500);
     novelBridgePending.set(id, { resolve, timer });
     const current = novelChapters[m.id];
-    const chapterURL = (op === 'next' || op === 'previous') && current?.sourceURL === m.url &&
+    const chapterURL = (op === 'next' || op === 'previous' || op === 'catalog' || op === 'jump') && current?.sourceURL === m.url &&
       novelSourceKind(current.url) === novelSourceKind(m.url)
       ? current.url : m.url;
-    window.postMessage({ channel: 'cngp-reader-request', id, op, url: chapterURL,
+    window.postMessage({ channel: 'cngp-reader-request', id, op, url: chapterURL, target,
       before: current?.sourceURL === m.url ? { url: current.url, text: current.text } : null }, location.origin);
   });
 }
@@ -165,6 +163,8 @@ function novelReaderPanel(box, m) {
   previous.onclick = () => novelReaderControl('previous', m);
   const next = document.createElement('button'); next.type = 'button'; next.textContent = '下一章';
   next.onclick = () => novelReaderControl('next', m);
+  const catalog = document.createElement('button'); catalog.type = 'button'; catalog.textContent = '目录';
+  catalog.onclick = () => novelOpenCatalog(m, catalog);
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.textContent = '连接 / 刷新';
   refresh.onclick = () => novelReaderControl('attach', m);
   const collapse = document.createElement('button'); collapse.type = 'button'; collapse.textContent = '折叠阅读框';
@@ -173,11 +173,10 @@ function novelReaderPanel(box, m) {
     panel.classList.add('collapsed', 'dialogue-on');
     novelDialogueStatus(m);
   };
-  const source = document.createElement('a'); source.href = m.url; source.target = '_blank';
-  source.rel = 'noopener noreferrer'; source.textContent = '在浏览器中打开 ↗';
-  toolbar.append(title, previous, next, refresh, collapse, source);
+  toolbar.append(title, previous, next, catalog, refresh, collapse);
+  if (!novelUsingTXT(m)) { const source = document.createElement('a'); source.href = m.url; source.target = '_blank'; source.rel = 'noopener noreferrer'; source.textContent = '在浏览器中打开 ↗'; toolbar.appendChild(source); }
   const status = document.createElement('div'); status.className = 'novel-browser-status';
-  status.textContent = '点击“连接 / 刷新”，读取已登录的' + novelSourceLabel(m) + '标签页。';
+  status.textContent = novelUsingTXT(m) ? '上传 TXT 文件后，点击“连接 / 刷新”读取。' : '点击“连接 / 刷新”，读取已登录的' + novelSourceLabel(m) + '标签页。';
   const content = document.createElement('article'); content.className = 'novel-browser-content';
   const compact = document.createElement('div'); compact.className = 'novel-compact';
   const compactLabel = document.createElement('div'); compactLabel.className = 'ai-label';
@@ -208,7 +207,7 @@ function novelReaderPanel(box, m) {
   panel.dataset.chapterReady = '0';
   novelCoverSetup(panel);
   box.appendChild(panel);
-  const saved = novelChapters[m.id]?.sourceURL === m.url ? novelChapters[m.id] : null;
+  const saved = novelChapters[m.id]?.sourceURL === novelSourceKey(m) ? novelChapters[m.id] : null;
   if (saved?.text) novelReaderRender(m, saved, false);
 }
 
@@ -351,13 +350,67 @@ function novelResetRevealSelection() {
   });
 }
 
-async function novelReaderControl(op, m) {
+function novelCatalogIsCurrent(m, chapter) {
+  const saved = novelChapters[m.id];
+  if (!saved || saved.sourceURL !== novelSourceKey(m)) return false;
+  if (novelUsingTXT(m)) return saved.url === 'txt:' + m.id + ':' + chapter.index;
+  try {
+    const a = new URL(chapter.url), b = new URL(saved.url);
+    if (a.hostname === 'fanqienovel.com' && b.hostname === a.hostname) return a.pathname === b.pathname;
+    if (['jjwxc.net', 'www.jjwxc.net'].includes(a.hostname) && ['jjwxc.net', 'www.jjwxc.net'].includes(b.hostname))
+      return a.pathname === b.pathname && a.searchParams.get('novelid') === b.searchParams.get('novelid') && a.searchParams.get('chapterid') === b.searchParams.get('chapterid');
+  } catch {}
+  return false;
+}
+
+CNGP.on('conv-opened', closeSimulationPopover);
+
+async function novelOpenCatalog(m, anchor) {
+  if (simulationPopover?.anchor === anchor) { closeSimulationPopover(); return; }
+  if (novelReaderRequest) { toast('正在读取章节，请稍候'); return; }
+  const request = {}; novelReaderRequest = request;
+  const currentURL = m.url;
+  const panel = openSimulationPopover(anchor);
+  const message = document.createElement('p'); message.className = 'simulation-note'; message.textContent = '正在读取来源网站目录…';
+  panel.appendChild(message);
+  let result;
+  try { result = novelUsingTXT(m) ? await api('/api/plugins/novel-reader/' + encodeURIComponent(m.id) + '/txt-catalog') : await novelBridgeRequest('catalog', m); } catch (e) { result = { error: e.message }; }
+  finally { if (novelReaderRequest === request) novelReaderRequest = null; }
+  if (!panel.isConnected || state.cur !== 'novel:' + m.id || novelModels.find(x => x.id === m.id)?.url !== currentURL) return;
+  if (result?.error || result?.opened || !Array.isArray(result?.chapters) || !result.chapters.length) {
+    message.textContent = result?.error || result?.message || '来源页面没有可用目录'; return;
+  }
+  message.textContent = '共 ' + result.chapters.length + ' 章';
+  const search = document.createElement('input'); search.type = 'search'; search.placeholder = '搜索分组'; search.setAttribute('aria-label', '搜索分组');
+  const list = document.createElement('div'); list.className = 'simulation-list';
+  const render = () => {
+    list.replaceChildren(); const query = search.value.trim().toLowerCase();
+    for (const chapter of result.chapters) {
+      if (query && !chapter.title.toLowerCase().includes(query)) continue;
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'simulation-item';
+      button.textContent = chapter.title; button.title = chapter.title;
+      if (novelCatalogIsCurrent(m, chapter)) { button.classList.add('active'); button.setAttribute('aria-current', 'true'); button.title = chapter.title + '（当前阅读）'; }
+      button.onclick = () => { closeSimulationPopover(); novelReaderControl('jump', m, novelUsingTXT(m) ? chapter.index : chapter.url); };
+      list.appendChild(button);
+    }
+    if (!list.childElementCount) { const empty = document.createElement('p'); empty.className = 'simulation-note'; empty.textContent = '没有匹配的章节'; list.appendChild(empty); }
+  };
+  search.oninput = render; panel.prepend(search); panel.appendChild(list); render(); search.focus();
+  requestAnimationFrame(() => {
+    if (!panel.isConnected || search.value) return;
+    const current = list.querySelector('.simulation-item.active');
+    if (current) list.scrollTop += current.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  });
+}
+
+async function novelReaderControl(op, m, target = '') {
   const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
   if (!panel || novelReaderRequest) return;
   const status = panel.querySelector('.novel-browser-status');
-  status.textContent = op === 'next' ? '正在读取下一章…' : op === 'previous' ? '正在读取上一章…' :
+  status.textContent = op === 'jump' ? '正在读取所选章节…' : op === 'next' ? '正在读取下一章…' : op === 'previous' ? '正在读取上一章…' :
     '正在连接' + novelSourceLabel(m) + '标签页…';
   const requestedURL = m.url;
+  const requestedSource = novelSourceKey(m);
   const request = {};
   novelReaderRequest = request;
   let progress = null;
@@ -374,18 +427,28 @@ async function novelReaderControl(op, m) {
     timer = setInterval(() => { elapsed.textContent = Math.max(1, Math.round((Date.now() - started) / 1000)) + 's'; }, 400);
     heading.append(spinner, thinking, elapsed);
     const hint = document.createElement('div'); hint.className = 'novel-reader-progress-hint';
-    hint.textContent = op === 'next' ? '正在读取下一章，请稍候…' : op === 'previous' ? '正在读取上一章，请稍候…' : '正在读取当前章节，请稍候…';
+    hint.textContent = op === 'jump' ? '正在读取所选章节，请稍候…' : op === 'next' ? '正在读取下一章，请稍候…' : op === 'previous' ? '正在读取上一章，请稍候…' : '正在读取当前章节，请稍候…';
     progress.append(progressLabel, heading, hint);
     $('#messages').appendChild(progress);
     scrollFollow();
   }
   let result;
-  try { result = await novelBridgeRequest(op, m); }
+  try {
+    if (novelUsingTXT(m)) {
+      const base = '/api/plugins/novel-reader/' + encodeURIComponent(m.id);
+      const catalog = await api(base + '/txt-catalog');
+      const current = novelChapters[m.id]?.url?.match(/:(\d+)$/);
+      let index = current ? Number(current[1]) : 0;
+      if (op === 'jump') index = Number(target); else if (op === 'next') index++; else if (op === 'previous') index--;
+      if (index < 0 || index >= catalog.chapters.length) result = { error: index < 0 ? '已经是第一章' : '已经是最后一章' };
+      else result = await api(base + '/txt-chapter?index=' + index);
+    } else result = await novelBridgeRequest(op, m, target);
+  } catch (e) { result = { error: e.message }; }
   finally { if (timer) clearInterval(timer); progress?.remove(); if (novelReaderRequest === request) novelReaderRequest = null; }
-  if (state.cur !== 'novel:' + m.id || novelModels.find(model => model.id === m.id)?.url !== requestedURL) return;
+  if (state.cur !== 'novel:' + m.id || novelModels.find(model => model.id === m.id)?.url !== requestedURL || novelSourceKey(m) !== requestedSource) return;
   if (result?.error) { status.textContent = result.error; toast(result.error); return; }
   if (result?.opened) { status.textContent = result.message; toast(result.message); return; }
-  if (typeof result?.text !== 'string' || result.text.length < 100) {
+  if (typeof result?.text !== 'string' || result.text.length < (novelUsingTXT(m) ? 1 : 100)) {
     status.textContent = novelSourceLabel(m) + '标签页没有可显示的完整章节'; toast(status.textContent); return;
   }
   if ((op === 'next' || op === 'previous') && novelChapters[m.id]?.url === result.url && novelChapters[m.id]?.text === result.text) {
@@ -398,7 +461,7 @@ function novelReaderRender(m, chapter, save) {
   const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
   if (!panel) return;
   const family = novelFontFamily(chapter.fontURL);
-  if (novelSourceKind(m.url) === 'fanqie' && !family && /[\uE000-\uF8FF]/.test(chapter.text)) {
+  if (!novelUsingTXT(m) && novelSourceKind(m.url) === 'fanqie' && !family && /[\uE000-\uF8FF]/.test(chapter.text)) {
     panel.querySelector('.novel-browser-status').textContent = '无法加载番茄章节字体'; return;
   }
   panel.querySelector('.novel-browser-title').textContent = chapter.title || '浏览器预览';
@@ -424,7 +487,7 @@ function novelReaderRender(m, chapter, save) {
   }
   if (save) {
     const prior = novelChapters[m.id];
-    novelChapters[m.id] = { sourceURL: m.url, url: chapter.url, title: chapter.title, text: chapter.text,
+    novelChapters[m.id] = { sourceURL: novelSourceKey(m), url: chapter.url, title: chapter.title, text: chapter.text,
       fontURL: chapter.fontURL, paragraphs: chapter.paragraphs,
       dialogueIndex: prior?.url === chapter.url && prior.text === chapter.text ? prior.dialogueIndex || 0 : 0 };
     novelSave();
@@ -449,7 +512,7 @@ async function novelDialogueNext(m) {
   const panel = document.querySelector('.novel-browser[data-model-id="' + CSS.escape(m.id) + '"]');
   if (!panel?.classList.contains('dialogue-on') || novelDialogueBusy) return;
   const chapter = novelChapters[m.id];
-  if (!chapter?.text || chapter.sourceURL !== m.url) return;
+  if (!chapter?.text || chapter.sourceURL !== novelSourceKey(m)) return;
   const paragraphs = chapter.text.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
   const index = chapter.dialogueIndex || 0;
   if (index >= paragraphs.length) { novelDialogueStatus(m); return; }
@@ -528,11 +591,11 @@ function novelReply(m, text, ts, fontURL = '', dialogueTyping = false) {
   copy.onclick = async () => { try { await navigator.clipboard.writeText(body.textContent); toast('已复制'); } catch { toast('复制失败'); } };
   const previous = document.createElement('button'); previous.type = 'button';
   previous.textContent = '<'; previous.title = '上一章'; previous.setAttribute('aria-label', '上一章');
-  previous.disabled = !novelSourceKind(m.url);
+  previous.disabled = !novelUsingTXT(m) && !novelSourceKind(m.url);
   previous.onclick = () => novelReaderControl('previous', m);
   const next = document.createElement('button'); next.type = 'button';
   next.textContent = '>'; next.title = '下一章'; next.setAttribute('aria-label', '下一章');
-  next.disabled = !novelSourceKind(m.url);
+  next.disabled = !novelUsingTXT(m) && !novelSourceKind(m.url);
   next.onclick = () => novelReaderControl('next', m);
   const disguise = document.createElement('button'); disguise.type = 'button';
   disguise.className = 'novel-disguise-toggle';
@@ -595,8 +658,8 @@ async function novelSend(text, imageID = '') {
   scrollBottom(true);
   requestAnimationFrame(() => scrollBottom(true));
   if (!text) return;
-  if (m.url) {
-    if (novelSourceKind(m.url)) {
+  if (novelUsingTXT(m) || m.url) {
+    if (novelUsingTXT(m) || novelSourceKind(m.url)) {
       const op = /^(上一章|上章)$/.test(text) ? 'previous' : /^(下一章|下章)$/.test(text) ? 'next' : 'attach';
       await novelReaderControl(op, m);
     } else {
@@ -620,21 +683,6 @@ function novelAddFanqieControls(box, m) {
   box.appendChild(hint);
 }
 
-async function novelUploadTXT(m) {
-  const file = document.createElement('input'); file.type = 'file'; file.accept = '.txt,text/plain'; file.hidden = true;
-  document.body.appendChild(file);
-  file.onchange = async () => {
-    try {
-      const selected = file.files[0]; if (!selected) return;
-      if (selected.size > 2 * 1024 * 1024) throw new Error('TXT 文件不能超过 2 MB');
-      const text = await selected.text();
-      await api('/api/plugins/novel-reader/' + m.id + '/text', { method: 'PUT', body: { text } });
-      toast('TXT 已上传，发送“继续”阅读');
-    } catch (e) { toast(e.message); }
-    finally { file.remove(); }
-  };
-  file.click();
-}
 
 function novelAddToMenu(menu) {
   for (const m of novelModels) {
@@ -696,22 +744,39 @@ function novelCreateModal() {
   const overlay = document.createElement('div'); overlay.className = 'overlay';
   const form = document.createElement('form'); form.className = 'modal';
   const h = document.createElement('h3'); h.textContent = '添加自定义模型';
-  const sub = document.createElement('p'); sub.className = 'modal-sub';
-  sub.textContent = '填写模型名称 Key 和模型链接；链接可稍后补充。';
+  const sub = document.createElement('p'); sub.className = 'modal-sub'; sub.textContent = '创建时选择阅读来源。';
   const name = document.createElement('input'); name.placeholder = '模型名称 Key'; name.setAttribute('aria-label', '模型名称 Key'); name.maxLength = 40; name.required = true;
-  const url = document.createElement('input'); url.placeholder = '模型链接（可选）'; url.setAttribute('aria-label', '模型链接'); url.type = 'url';
+  const modeLabel = document.createElement('label'); modeLabel.textContent = '阅读来源'; modeLabel.htmlFor = 'novelCreateSource';
+  const mode = document.createElement('select'); mode.id = 'novelCreateSource'; mode.setAttribute('aria-label', '阅读来源');
+  for (const [value, label] of [['web', '网页链接'], ['txt', '上传 TXT'], ['other', '其他阅读源']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; mode.appendChild(option); }
+  const url = document.createElement('input'); url.placeholder = '模型链接'; url.setAttribute('aria-label', '模型链接'); url.type = 'url'; url.required = true;
+  const file = document.createElement('input'); file.type = 'file'; file.accept = '.txt,text/plain'; file.setAttribute('aria-label', '选择 TXT 文件'); file.className = 'hidden';
+  const hint = document.createElement('p'); hint.className = 'modal-sub';
+  const syncMode = () => { const txt = mode.value === 'txt'; const other = mode.value === 'other'; url.classList.toggle('hidden', txt); url.required = !txt; url.placeholder = other ? '阅读源链接' : '模型链接'; url.setAttribute('aria-label', url.placeholder); file.classList.toggle('hidden', !txt); file.required = txt; hint.textContent = txt ? '支持 UTF-8 和 GB18030 格式，文件不超过 15 MB。' : other ? '暂时仅保存阅读源链接，书源解析与小说阅读功能尚未接入。' : '输入番茄、晋江或其他网页链接。'; };
+  mode.onchange = syncMode; syncMode();
   const actions = document.createElement('div'); actions.className = 'modal-actions';
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
-  cancel.onclick = () => { root.innerHTML = ''; };
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.onclick = () => { root.innerHTML = ''; };
   const save = document.createElement('button'); save.type = 'submit'; save.className = 'btn-primary'; save.textContent = '添加';
-  actions.append(cancel, save); form.append(h, sub, name, url, actions); overlay.appendChild(form); root.appendChild(overlay);
+  actions.append(cancel, save); form.append(h, sub, name, modeLabel, mode, url, file, hint, actions); overlay.appendChild(form); root.appendChild(overlay);
   overlay.onclick = e => { if (e.target === overlay) root.innerHTML = ''; };
+  let created = null;
   form.onsubmit = async e => {
     e.preventDefault(); save.disabled = true;
     try {
-      const d = await api('/api/plugins/novel-reader/models', { body: { name: name.value.trim(), url: url.value.trim() } });
-      root.innerHTML = ''; await novelLoad();
-      novelSelect(novelModels.find(m => m.id === d.model.id) || d.model);
+      const isTXT = mode.value === 'txt'; let text = '';
+      if (isTXT) {
+        const selected = file.files[0]; if (!selected) throw new Error('请选择 TXT 文件');
+        if (selected.size > 15 * 1024 * 1024) throw new Error('TXT 文件不能超过 15 MB');
+        const bytes = await selected.arrayBuffer();
+        try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+        catch { text = new TextDecoder('gb18030', { fatal: true }).decode(bytes); }
+        if (!text.trim()) throw new Error('TXT 文件没有可阅读的内容');
+      }
+      if (!created) { const d = await api('/api/plugins/novel-reader/models', { body: { name: name.value.trim(), url: isTXT ? '' : url.value.trim() } }); created = d.model; name.disabled = true; mode.disabled = true; url.disabled = true; }
+      if (isTXT) await api('/api/plugins/novel-reader/' + encodeURIComponent(created.id) + '/text', { method: 'PUT', body: { text } });
+      await novelLoad(); const model = novelModels.find(m => m.id === created.id) || created;
+      if (isTXT || mode.value === 'other') { novelSources[model.id] = mode.value; try { localStorage.setItem('cngp_novel_sources_' + state.me.id, JSON.stringify(novelSources)); } catch {} }
+      root.innerHTML = ''; novelSelect(model); if (isTXT) await novelReaderControl('attach', model);
     } catch (err) { toast(err.message); save.disabled = false; }
   };
   name.focus();
